@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 21,
-    "identityHash": "ba0d843b54751cfe3343a8f120ecfdbe",
+    "identityHash": "69e8165d21a7cebb61fad6f6aaaf96ba",
     "entities": [
       {
         "tableName": "new_format",
@@ -1184,7 +1184,7 @@
       },
       {
         "tableName": "playback_event",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`eventId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `timestamp` INTEGER NOT NULL, `videoId` TEXT NOT NULL, `channelIds` TEXT NOT NULL, `albumBrowseId` TEXT, `durationSecond` INTEGER NOT NULL, `listenedSecond` INTEGER NOT NULL)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`eventId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `timestamp` INTEGER NOT NULL, `videoId` TEXT NOT NULL, `albumBrowseId` TEXT, `durationSecond` INTEGER NOT NULL, `listenedSecond` INTEGER NOT NULL)",
         "fields": [
           {
             "fieldPath": "eventId",
@@ -1201,12 +1201,6 @@
           {
             "fieldPath": "videoId",
             "columnName": "videoId",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "channelIds",
-            "columnName": "channelIds",
             "affinity": "TEXT",
             "notNull": true
           },
@@ -1234,11 +1228,85 @@
             "eventId"
           ]
         }
+      },
+      {
+        "tableName": "event_artist",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`eventId` INTEGER NOT NULL, `channelId` TEXT NOT NULL, `timestamp` INTEGER NOT NULL, PRIMARY KEY(`eventId`, `channelId`), FOREIGN KEY(`eventId`) REFERENCES `playback_event`(`eventId`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "eventId",
+            "columnName": "eventId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "channelId",
+            "columnName": "channelId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timestamp",
+            "columnName": "timestamp",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "eventId",
+            "channelId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_event_artist_eventId",
+            "unique": false,
+            "columnNames": [
+              "eventId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_event_artist_eventId` ON `${TABLE_NAME}` (`eventId`)"
+          },
+          {
+            "name": "index_event_artist_channelId",
+            "unique": false,
+            "columnNames": [
+              "channelId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_event_artist_channelId` ON `${TABLE_NAME}` (`channelId`)"
+          },
+          {
+            "name": "index_event_artist_timestamp_channelId",
+            "unique": false,
+            "columnNames": [
+              "timestamp",
+              "channelId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_event_artist_timestamp_channelId` ON `${TABLE_NAME}` (`timestamp`, `channelId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "playback_event",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "eventId"
+            ],
+            "referencedColumns": [
+              "eventId"
+            ]
+          }
+        ]
       }
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'ba0d843b54751cfe3343a8f120ecfdbe')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '69e8165d21a7cebb61fad6f6aaaf96ba')"
     ]
   }
 }

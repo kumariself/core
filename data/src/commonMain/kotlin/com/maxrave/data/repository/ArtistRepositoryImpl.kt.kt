@@ -25,7 +25,7 @@ internal class ArtistRepositoryImpl(
             emit(localDataSource.getAllArtists(limit))
         }.flowOn(Dispatchers.IO)
 
-    override fun getArtistById(id: String): Flow<ArtistEntity> =
+    override fun getArtistById(id: String): Flow<ArtistEntity?> =
         flow {
             emit(localDataSource.getArtist(id))
         }.flowOn(Dispatchers.IO)

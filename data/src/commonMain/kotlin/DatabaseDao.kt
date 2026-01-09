@@ -27,7 +27,11 @@ import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.entities.SongInfoEntity
 import com.maxrave.domain.data.entities.TranslatedLyricsEntity
 import com.maxrave.domain.data.entities.YourYouTubePlaylistList
+import com.maxrave.domain.data.entities.analytics.EventArtistEntity
 import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
+import com.maxrave.domain.data.entities.analytics.query.TopPlayedAlbum
+import com.maxrave.domain.data.entities.analytics.query.TopPlayedArtist
+import com.maxrave.domain.data.entities.analytics.query.TopPlayedTracks
 import com.maxrave.domain.data.type.PlaylistType
 import com.maxrave.domain.data.type.RecentlyType
 import com.maxrave.domain.extension.now
@@ -308,7 +312,7 @@ interface DatabaseDao {
     suspend fun getAllArtists(limit: Int): List<ArtistEntity>
 
     @Query("SELECT * FROM artist WHERE channelId = :channelId")
-    suspend fun getArtist(channelId: String): ArtistEntity
+    suspend fun getArtist(channelId: String): ArtistEntity?
 
     @Query("SELECT * FROM artist WHERE followed = 1 ORDER BY followedAt DESC LIMIT :limit OFFSET :offset")
     suspend fun getFollowedArtists(
@@ -800,6 +804,41 @@ interface DatabaseDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertPlaybackEvent(playbackEventEntity: PlaybackEventEntity): Long
 
+    @Insert
+    suspend fun insertEventArtist(eventArtist: EventArtistEntity)
+
+    @Transaction
+    suspend fun insertPlaybackWithArtists(
+        videoId: String,
+        channelIds: List<String>,
+        albumBrowseId: String?,
+        durationSecond: Long,
+        listenedSecond: Long
+    ): Long {
+        val timestamp = now()
+
+        val eventId = insertPlaybackEvent(
+            PlaybackEventEntity(
+                timestamp = timestamp,
+                videoId = videoId,
+                albumBrowseId = albumBrowseId,
+                durationSecond = durationSecond,
+                listenedSecond = listenedSecond
+            )
+        )
+
+        channelIds.forEach { channelId ->
+            insertEventArtist(
+                EventArtistEntity(
+                    eventId = eventId,
+                    channelId = channelId,
+                    timestamp = timestamp
+                )
+            )
+        }
+        return eventId
+    }
+
     @Query("SELECT * FROM playback_event ORDER BY timestamp DESC LIMIT :limit OFFSET :offset")
     suspend fun getPlaybackEventsByOffset(
         offset: Int,
@@ -815,4 +854,51 @@ interface DatabaseDao {
 
     @Query("DELETE FROM playback_event WHERE timestamp < :cutoffTimestamp")
     suspend fun deleteOldPlaybackEvents(cutoffTimestamp: LocalDateTime)
+
+    // Query event
+    @Query("SELECT \n" +
+        "  videoId,\n" +
+        "  COUNT(*) AS playCount,\n" +
+        "  SUM(listenedSecond) AS totalListeningTime\n" +
+        "FROM playback_event\n" +
+        "WHERE timestamp BETWEEN :startTimestamp AND :endTimestamp\n" +
+        "GROUP BY videoId\n" +
+        "ORDER BY playCount DESC\n" +
+        "LIMIT 100")
+    suspend fun queryTopPlayedSongsInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime
+    ): List<TopPlayedTracks>
+
+    @Query("SELECT channelId, COUNT(*) AS playCount FROM event_artist" +
+        " WHERE timestamp BETWEEN :startTimestamp AND :endTimestamp" +
+        " GROUP BY channelId" + " ORDER BY playCount DESC" +
+        " LIMIT 100")
+    suspend fun queryTopArtistsInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime
+    ): List<TopPlayedArtist>
+
+    @Query("SELECT \n" +
+        "  albumBrowseId,\n" +
+        "  COUNT(*) AS playCount\n" +
+        "FROM playback_event\n" +
+        "WHERE timestamp BETWEEN :startTimestamp AND :endTimestamp\n" +
+        "AND albumBrowseId IS NOT NULL " +
+        "GROUP BY albumBrowseId\n" +
+        "ORDER BY playCount DESC\n" +
+        "LIMIT 100")
+    suspend fun queryTopAlbumsInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime
+    ): List<TopPlayedAlbum>
+
+    @Query("SELECT COUNT(*) FROM playback_event")
+    suspend fun getTotalPlaybackEventCount(): Long
+
+    @Query("SELECT COUNT(*) FROM event_artist")
+    suspend fun getTotalEventArtistCount(): Long
+
+    @Query("SELECT SUM(listenedSecond) FROM playback_event")
+    suspend fun getTotalListeningTimeInSeconds(): Long
 }

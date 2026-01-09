@@ -24,7 +24,6 @@ import com.maxrave.common.TITLE
 import com.maxrave.data.db.Converters
 import com.maxrave.domain.data.entities.NewFormatEntity
 import com.maxrave.domain.data.entities.SongEntity
-import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.mediaService.SponsorSkipSegments
 import com.maxrave.domain.data.model.searchResult.songs.Artist
@@ -2244,14 +2243,15 @@ internal class MediaServiceHandlerImpl(
             Logger.d(TAG, "Tracking listening for ${song.title} at position $currentPositionMillis ms")
             analyticsRepository
                 .insertPlaybackEvent(
-                    PlaybackEventEntity(
-                        timestamp = now(),
-                        videoId = song.videoId,
-                        channelIds = song.artistId ?: emptyList(),
-                        albumBrowseId = song.albumId,
-                        durationSecond = song.durationSeconds,
-                        listenedSecond = (currentPositionMillis / 1000).toInt(),
-                    ),
+                    videoId = song.videoId,
+                    channelIds = song.artistId ?: emptyList(),
+                    albumBrowseId = song.albumId,
+                    durationSecond = song.durationSeconds.toLong(),
+                    listenedSecond = if (percent >= 0.8f) {
+                        song.durationSeconds.toLong()
+                    } else {
+                        (currentPositionMillis / 1000)
+                    },
                 ).collect {
                     Logger.d(TAG, "Inserted playback event for ${song.title}: $it")
                 }

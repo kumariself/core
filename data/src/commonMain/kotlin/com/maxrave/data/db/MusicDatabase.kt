@@ -24,6 +24,7 @@ import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.entities.SongInfoEntity
 import com.maxrave.domain.data.entities.TranslatedLyricsEntity
 import com.maxrave.domain.data.entities.YourYouTubePlaylistList
+import com.maxrave.domain.data.entities.analytics.EventArtistEntity
 import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
 
 @Database(
@@ -32,7 +33,7 @@ import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
         AlbumEntity::class, PlaylistEntity::class, LocalPlaylistEntity::class, LyricsEntity::class, QueueEntity::class,
         SetVideoIdEntity::class, PairSongLocalPlaylist::class, GoogleAccountEntity::class, FollowedArtistSingleAndAlbum::class,
         NotificationEntity::class, TranslatedLyricsEntity::class, PodcastsEntity::class, EpisodeEntity::class,
-        YourYouTubePlaylistList::class, PlaybackEventEntity::class
+        YourYouTubePlaylistList::class, PlaybackEventEntity::class, EventArtistEntity::class
     ],
     version = 21,
     exportSchema = true,

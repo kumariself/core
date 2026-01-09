@@ -11,6 +11,8 @@ import com.maxrave.domain.utils.toListName
 import kotlinx.datetime.DateTimeUnit
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
+import kotlinx.datetime.atTime
+import kotlinx.datetime.minus
 import kotlinx.datetime.plus
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
@@ -30,6 +32,12 @@ fun LocalDateTime.plusSeconds(seconds: Long): LocalDateTime =
         .toInstant(TimeZone.currentSystemDefault())
         .plus(seconds, DateTimeUnit.SECOND, TimeZone.currentSystemDefault())
         .toLocalDateTime(TimeZone.currentSystemDefault())
+
+fun startTimestampOfThisYear(): LocalDateTime =
+    LocalDateTime(now().year, 1, 1, 0, 0, 0, 0)
+
+fun LocalDateTime.beforeXDays(x: Int): LocalDateTime =
+    this.date.minus(x, DateTimeUnit.DAY).atTime(this.time)
 
 fun GenericMediaItem.isSong(): Boolean = this.metadata.description?.contains(MERGING_DATA_TYPE.SONG) == true
 
