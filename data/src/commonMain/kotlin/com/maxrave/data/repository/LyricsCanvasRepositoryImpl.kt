@@ -10,6 +10,7 @@ import com.maxrave.domain.data.entities.TranslatedLyricsEntity
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.canvas.CanvasResult
 import com.maxrave.domain.data.model.metadata.Lyrics
+import com.maxrave.domain.data.model.metadata.SimpMusicLyrics
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.repository.LyricsCanvasRepository
@@ -432,7 +433,11 @@ internal class LyricsCanvasRepositoryImpl(
                     }
                     val appLyrics =
                         result.toLyrics()?.copy(
-                            simpMusicLyricsId = result.id,
+                            simpMusicLyrics =
+                                SimpMusicLyrics(
+                                    id = result.id,
+                                    vote = result.vote,
+                                ),
                         )
                     if (appLyrics == null) {
                         Logger.w(simpMusicLyricsTag, "Failed to convert lyrics for videoId: $videoId")
@@ -464,7 +469,11 @@ internal class LyricsCanvasRepositoryImpl(
                             lyrics
                                 .toLyrics()
                                 .copy(
-                                    simpMusicLyricsId = lyrics.id,
+                                    simpMusicLyrics =
+                                        SimpMusicLyrics(
+                                            id = lyrics.id,
+                                            vote = lyrics.vote,
+                                        ),
                                 ),
                         ),
                     )
@@ -474,16 +483,21 @@ internal class LyricsCanvasRepositoryImpl(
                 }
         }.flowOn(Dispatchers.IO)
 
-    override fun voteSimpMusicLyrics(lyricsId: String, upvote: Boolean): Flow<Resource<String>> = flow {
-        simpMusicLyrics.voteLyrics(lyricsId, upvote)
-            .onSuccess {
-                Logger.d(simpMusicLyricsTag, "Vote Lyrics Success: $it")
-                emit(Resource.Success(it.id))
-            }.onFailure {
-                Logger.e(simpMusicLyricsTag, "Vote Lyrics Error: ${it.message}")
-                emit(Resource.Error<String>(it.message ?: "Failed to vote lyrics"))
-            }
-    }.flowOn(Dispatchers.IO)
+    override fun voteSimpMusicLyrics(
+        lyricsId: String,
+        upvote: Boolean,
+    ): Flow<Resource<String>> =
+        flow {
+            simpMusicLyrics
+                .voteLyrics(lyricsId, upvote)
+                .onSuccess {
+                    Logger.d(simpMusicLyricsTag, "Vote Lyrics Success: $it")
+                    emit(Resource.Success(it.id))
+                }.onFailure {
+                    Logger.e(simpMusicLyricsTag, "Vote Lyrics Error: ${it.message}")
+                    emit(Resource.Error<String>(it.message ?: "Failed to vote lyrics"))
+                }
+        }.flowOn(Dispatchers.IO)
 
     override fun voteSimpMusicTranslatedLyrics(
         translatedLyricsId: String,
