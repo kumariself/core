@@ -72,8 +72,7 @@ class GstreamerPlayerAdapter(
         ERROR, // Error state
     }
 
-    private fun InternalState.isInReadyState(): Boolean =
-        this == InternalState.READY || this == InternalState.PLAYING || this == InternalState.PAUSED
+    private fun InternalState.isInReadyState(): Boolean = this == InternalState.READY || this == InternalState.PLAYING || this == InternalState.PAUSED
 
     init {
         /**
@@ -183,6 +182,7 @@ class GstreamerPlayerAdapter(
     // Shuffle management
     // Maps original playlist index -> shuffled position
     private var shuffleIndices = mutableListOf<Int>()
+
     // Maps shuffled position -> original playlist index
     private var shuffleOrder = mutableListOf<Int>()
 
@@ -485,14 +485,20 @@ class GstreamerPlayerAdapter(
             // Update current index
             localCurrentMediaItemIndex =
                 when {
-                    localCurrentMediaItemIndex == fromIndex -> toIndex
-                    fromIndex < localCurrentMediaItemIndex && toIndex >= localCurrentMediaItemIndex ->
+                    localCurrentMediaItemIndex == fromIndex -> {
+                        toIndex
+                    }
+                    fromIndex < localCurrentMediaItemIndex && toIndex >= localCurrentMediaItemIndex -> {
                         localCurrentMediaItemIndex - 1
+                    }
 
-                    fromIndex > localCurrentMediaItemIndex && toIndex <= localCurrentMediaItemIndex ->
+                    fromIndex > localCurrentMediaItemIndex && toIndex <= localCurrentMediaItemIndex -> {
                         localCurrentMediaItemIndex + 1
+                    }
 
-                    else -> localCurrentMediaItemIndex
+                    else -> {
+                        localCurrentMediaItemIndex
+                    }
                 }
 
             // Update shuffle order if enabled
@@ -557,21 +563,19 @@ class GstreamerPlayerAdapter(
 
     override fun getMediaItemAt(index: Int): GenericMediaItem? = playlist.getOrNull(index)
 
-    override fun getCurrentMediaTimeLine(): List<GenericMediaItem> {
-        return if (internalShuffleModeEnabled) {
+    override fun getCurrentMediaTimeLine(): List<GenericMediaItem> =
+        if (internalShuffleModeEnabled) {
             shuffleOrder.mapNotNull { shuffledIndex -> playlist.getOrNull(shuffledIndex) }
         } else {
             playlist.toList()
         }
-    }
 
-    override fun getUnshuffledIndex(shuffledIndex: Int): Int {
-        return if (internalShuffleModeEnabled) {
+    override fun getUnshuffledIndex(shuffledIndex: Int): Int =
+        if (internalShuffleModeEnabled) {
             shuffleOrder.getOrNull(shuffledIndex) ?: -1
         } else {
             shuffledIndex
         }
-    }
 
     // ========== Playback State Properties ==========
 
@@ -636,7 +640,9 @@ class GstreamerPlayerAdapter(
 
     private fun getNextMediaItemIndex(): Int =
         when (internalRepeatMode) {
-            PlayerConstants.REPEAT_MODE_ONE -> localCurrentMediaItemIndex
+            PlayerConstants.REPEAT_MODE_ONE -> {
+                localCurrentMediaItemIndex
+            }
             PlayerConstants.REPEAT_MODE_ALL -> {
                 if (internalShuffleModeEnabled && shuffleOrder.isNotEmpty()) {
                     // Find current position in shuffle order
@@ -670,16 +676,19 @@ class GstreamerPlayerAdapter(
 
     private fun getPreviousMediaItemIndex(): Int =
         when (internalRepeatMode) {
-            PlayerConstants.REPEAT_MODE_ONE -> localCurrentMediaItemIndex
+            PlayerConstants.REPEAT_MODE_ONE -> {
+                localCurrentMediaItemIndex
+            }
             PlayerConstants.REPEAT_MODE_ALL -> {
                 if (internalShuffleModeEnabled && shuffleOrder.isNotEmpty()) {
                     // Find current position in shuffle order
                     val currentShufflePos = shuffleIndices.getOrNull(localCurrentMediaItemIndex) ?: 0
-                    val prevShufflePos = if (currentShufflePos > 0) {
-                        currentShufflePos - 1
-                    } else {
-                        shuffleOrder.size - 1
-                    }
+                    val prevShufflePos =
+                        if (currentShufflePos > 0) {
+                            currentShufflePos - 1
+                        } else {
+                            shuffleOrder.size - 1
+                        }
                     shuffleOrder.getOrNull(prevShufflePos) ?: localCurrentMediaItemIndex
                 } else {
                     if (localCurrentMediaItemIndex > 0) {
@@ -1128,7 +1137,6 @@ class GstreamerPlayerAdapter(
 
         val bufferingListener =
             Bus.BUFFERING { _, percent ->
-
             }
 
         val asyncDoneListener =
@@ -1290,7 +1298,9 @@ class GstreamerPlayerAdapter(
                     for (i in 1..maxPrecacheCount) {
                         val nextIndex =
                             when (internalRepeatMode) {
-                                PlayerConstants.REPEAT_MODE_ALL -> (index + i) % playlist.size
+                                PlayerConstants.REPEAT_MODE_ALL -> {
+                                    (index + i) % playlist.size
+                                }
                                 else -> {
                                     val next = index + i
                                     if (next < playlist.size) next else break
@@ -1432,7 +1442,10 @@ class GstreamerPlayerAdapter(
      * @param insertedOriginalIndex The index in the original playlist where item was inserted
      * @param afterShufflePos The shuffle position after which to insert (typically current song's position)
      */
-    private fun insertIntoShuffleOrder(insertedOriginalIndex: Int, afterShufflePos: Int) {
+    private fun insertIntoShuffleOrder(
+        insertedOriginalIndex: Int,
+        afterShufflePos: Int,
+    ) {
         if (playlist.isEmpty() || insertedOriginalIndex !in playlist.indices) {
             return
         }
@@ -1609,26 +1622,125 @@ class GstreamerPlayerAdapter(
 
     /**
      * Query over a stream of possible environment variables for GStreamer
-     * location, filtering on the first non-null result, and adding \bin\ to the
+     * location, filtering on the first non-null result, and adding \\bin\\ to the
      * value.
+     *
+     * Also searches common installation directories and automatically sets
+     * environment variables for all found GStreamer variants.
      *
      * @return location or empty string
      */
     private fun findWindowsLocation(): String? {
-        if (Platform.is64Bit()) {
-            return Stream
-                .of<String?>(
+        // Define all possible GStreamer variants and their paths
+        val gstreamerVariants =
+            listOf(
+                Triple(
                     "GSTREAMER_1_0_ROOT_MSVC_X86_64",
+                    "msvc_x86_64",
+                    listOf(
+                        "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64",
+                        "C:\\gstreamer\\1.0\\msvc_x86_64",
+                        System.getenv("GSTREAMER_1_0_ROOT_MSVC_X86_64"),
+                    ),
+                ),
+                Triple(
+                    "GSTREAMER_1_0_ROOT_MSVC_X86",
+                    "msvc_x86",
+                    listOf(
+                        "C:\\Program Files (x86)\\gstreamer\\1.0\\msvc_x86",
+                        "C:\\Program Files\\gstreamer\\1.0\\msvc_x86",
+                        "C:\\gstreamer\\1.0\\msvc_x86",
+                        System.getenv("GSTREAMER_1_0_ROOT_MSVC_X86"),
+                    ),
+                ),
+                Triple(
+                    "GSTREAMER_1_0_ROOT_MSVC_ARM64",
+                    "msvc_arm64",
+                    listOf(
+                        "C:\\Program Files\\gstreamer\\1.0\\msvc_arm64",
+                        "C:\\gstreamer\\1.0\\msvc_arm64",
+                        System.getenv("GSTREAMER_1_0_ROOT_MSVC_ARM64"),
+                    ),
+                ),
+                Triple(
                     "GSTREAMER_1_0_ROOT_MINGW_X86_64",
-                    "GSTREAMER_1_0_ROOT_X86_64",
-                ).map<String?> { name: String? -> System.getenv(name) }
-                .filter { p: String? -> p != null }
-                .map<String?> { p: String? -> if (p!!.endsWith("\\")) p + "bin\\" else p + "\\bin\\" }
-                .findFirst()
-                .orElse("")
-        } else {
-            return ""
+                    "mingw_x86_64",
+                    listOf(
+                        "C:\\Program Files\\gstreamer\\1.0\\mingw_x86_64",
+                        "C:\\gstreamer\\1.0\\mingw_x86_64",
+                        System.getenv("GSTREAMER_1_0_ROOT_MINGW_X86_64"),
+                    ),
+                ),
+                Triple(
+                    "GSTREAMER_1_0_ROOT_MINGW_X86",
+                    "mingw_x86",
+                    listOf(
+                        "C:\\Program Files (x86)\\gstreamer\\1.0\\mingw_x86",
+                        "C:\\Program Files\\gstreamer\\1.0\\mingw_x86",
+                        "C:\\gstreamer\\1.0\\mingw_x86",
+                        System.getenv("GSTREAMER_1_0_ROOT_MINGW_X86"),
+                    ),
+                ),
+            )
+        
+        var firstFoundBinPath: String? = null
+        
+        // Try to find and set GStreamer path for each variant
+        for ((envVar, variant, paths) in gstreamerVariants) {
+            for (path in paths) {
+                if (path != null && File(path).exists()) {
+                    val binPath = if (path.endsWith("\\")) path + "bin\\" else path + "\\bin\\"
+                    
+                    // Set environment variable for this variant
+                    try {
+                        Kernel32.INSTANCE.SetEnvironmentVariable(envVar, path)
+                        Logger.d(TAG, "GStreamer found: $variant at $path")
+                        Logger.d(TAG, "Set environment variable: $envVar=$path")
+                    } catch (e: Exception) {
+                        Logger.w(TAG, "Failed to set environment variable $envVar: ${e.message}")
+                    }
+                    
+                    // Store the first found bin path to return
+                    if (firstFoundBinPath == null) {
+                        firstFoundBinPath = binPath
+                        Logger.d(TAG, "Using GStreamer bin path: $binPath")
+                    }
+                    
+                    break // Found this variant, move to next
+                }
+            }
         }
+        
+        // If no installation found, try legacy environment variable approach
+        if (firstFoundBinPath == null) {
+            Logger.w(TAG, "Warning: GStreamer not found in any common installation paths")
+            Logger.w(TAG, "Attempting to use environment variables...")
+            
+            if (Platform.is64Bit()) {
+                return Stream
+                    .of<String?>(
+                        "GSTREAMER_1_0_ROOT_MSVC_X86_64",
+                        "GSTREAMER_1_0_ROOT_MINGW_X86_64",
+                        "GSTREAMER_1_0_ROOT_X86_64",
+                    ).map<String?> { name: String? -> System.getenv(name) }
+                    .filter { p: String? -> p != null }
+                    .map<String?> { p: String? -> if (p!!.endsWith("\\")) p + "bin\\" else p + "\\bin\\" }
+                    .findFirst()
+                    .orElse("")
+            } else {
+                return Stream
+                    .of<String?>(
+                        "GSTREAMER_1_0_ROOT_MSVC_X86",
+                        "GSTREAMER_1_0_ROOT_MINGW_X86",
+                    ).map<String?> { name: String? -> System.getenv(name) }
+                    .filter { p: String? -> p != null }
+                    .map<String?> { p: String? -> if (p!!.endsWith("\\")) p + "bin\\" else p + "\\bin\\" }
+                    .findFirst()
+                    .orElse("")
+            }
+        }
+        
+        return firstFoundBinPath
     }
 }
 
@@ -1647,9 +1759,22 @@ data class GstreamerPlayer(
     fun seek(
         position: Long,
         unit: TimeUnit,
-    ): Boolean = playerBin.seek(1.0, Format.TIME, EnumSet.of(SeekFlags.FLUSH,
-        SeekFlags.ACCURATE), SeekType.SET, TimeUnit.NANOSECONDS.convert(position,
-        unit), SeekType.NONE, -1)
+    ): Boolean =
+        playerBin.seek(
+            1.0,
+            Format.TIME,
+            EnumSet.of(
+                SeekFlags.FLUSH,
+                SeekFlags.ACCURATE,
+            ),
+            SeekType.SET,
+            TimeUnit.NANOSECONDS.convert(
+                position,
+                unit,
+            ),
+            SeekType.NONE,
+            -1,
+        )
 
     fun seek(
         rate: Double,
