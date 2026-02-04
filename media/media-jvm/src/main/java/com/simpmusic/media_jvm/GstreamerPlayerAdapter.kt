@@ -1589,7 +1589,7 @@ class GstreamerPlayerAdapter(
     private fun configurePaths() {
         if (Platform.isWindows()) {
             val gstPath = System.getProperty("gstreamer.path", findWindowsLocation())
-            if (!gstPath!!.isEmpty()) {
+            if (!gstPath.isNullOrEmpty()) {
                 val systemPath = System.getenv("PATH")
                 if (systemPath == null || systemPath.trim { it <= ' ' }.isEmpty()) {
                     Kernel32.INSTANCE.SetEnvironmentVariable("PATH", gstPath)
@@ -1609,12 +1609,19 @@ class GstreamerPlayerAdapter(
                     "gstreamer.path",
                     "/Library/Frameworks/GStreamer.framework/Libraries/",
                 )
-            if (!gstPath!!.isEmpty()) {
+            if (!gstPath.isNullOrEmpty()) {
                 val jnaPath = System.getProperty("jna.library.path", "").trim { it <= ' ' }
                 if (jnaPath.isEmpty()) {
                     System.setProperty("jna.library.path", gstPath)
                 } else {
                     System.setProperty("jna.library.path", jnaPath + File.pathSeparator + gstPath)
+                }
+            } else {
+                val appleSiliconPath = File("/opt/homebrew/lib")
+                if (appleSiliconPath.exists()) {
+                    System.setProperty("jna.library.path", "/opt/homebrew/lib")
+                } else {
+                    System.setProperty("jna.library.path", "/usr/local/lib")
                 }
             }
         }
