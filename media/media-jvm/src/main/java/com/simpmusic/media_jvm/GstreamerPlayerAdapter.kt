@@ -88,6 +88,21 @@ class GstreamerPlayerAdapter(
          * is a higher version.
          */
         Gst.init(Version.of(1, 20), "FXPlayer", "--gapless")
+
+        // Load crossfade settings
+        coroutineScope.launch {
+            dataStoreManager.crossfadeEnabled.collect { enabled ->
+                crossfadeEnabled = (enabled == DataStoreManager.TRUE)
+                Logger.d(TAG, "Crossfade enabled: $crossfadeEnabled")
+            }
+        }
+
+        coroutineScope.launch {
+            dataStoreManager.crossfadeDuration.collect { duration ->
+                crossfadeDurationMs = duration
+                Logger.d(TAG, "Crossfade duration: $crossfadeDurationMs ms")
+            }
+        }
     }
 
     // ========== Threading Model ==========
@@ -174,6 +189,22 @@ class GstreamerPlayerAdapter(
     private var precacheEnabled = true
     private val maxPrecacheCount = 2
     private var precacheJob: Job? = null
+
+    // Crossfade system
+    @Volatile
+    private var crossfadeEnabled = false
+
+    @Volatile
+    private var crossfadeDurationMs = 5000
+
+    @Volatile
+    private var secondaryPlayer: GstreamerPlayer? = null
+
+    @Volatile
+    private var crossfadeJob: Job? = null
+
+    @Volatile
+    private var isCrossfading = false
 
     // Playlist management
     private val playlist = mutableListOf<GenericMediaItem>()
@@ -820,6 +851,12 @@ class GstreamerPlayerAdapter(
         precacheJob?.cancel()
         positionUpdateJob?.cancel()
 
+        // Cancel crossfade
+        crossfadeJob?.cancel()
+        secondaryPlayer?.release()
+        secondaryPlayer = null
+        isCrossfading = false
+
         coroutineScope.cancel()
         cleanupCurrentPlayerInternal()
         clearAllPrecacheInternal()
@@ -1212,6 +1249,12 @@ class GstreamerPlayerAdapter(
     private fun cleanupCurrentPlayerInternal() {
         stopPositionUpdates()
         cleanupBusListenersInternal()
+
+        // Cancel any ongoing crossfade
+        crossfadeJob?.cancel()
+        crossfadeJob = null
+        isCrossfading = false
+
         currentPlayer?.let { cleanupPlayerInternal(it) }
         currentPlayer = null
     }
@@ -1220,25 +1263,178 @@ class GstreamerPlayerAdapter(
      * Handle track end
      */
     private fun handleTrackEndInternal() {
-        when (internalRepeatMode) {
-            PlayerConstants.REPEAT_MODE_ONE -> {
-                seekTo(localCurrentMediaItemIndex, 0)
-            }
+        // Check if crossfade should be used
+        val shouldCrossfade = crossfadeEnabled &&
+                              hasNextMediaItem() &&
+                              !isCrossfading &&
+                              currentMediaItem?.isVideo() != true // No crossfade for video
 
-            PlayerConstants.REPEAT_MODE_ALL -> {
-                if (hasNextMediaItem()) {
-                    seekToNext()
+        if (shouldCrossfade) {
+            // Trigger crossfade instead of normal transition
+            val nextIndex = getNextMediaItemIndex()
+            triggerCrossfadeTransition(nextIndex)
+        } else {
+            // Original behavior
+            when (internalRepeatMode) {
+                PlayerConstants.REPEAT_MODE_ONE -> {
+                    seekTo(localCurrentMediaItemIndex, 0)
                 }
-            }
 
-            else -> {
-                if (localCurrentMediaItemIndex < playlist.size - 1) {
-                    seekToNext()
-                } else {
-                    notifyEqualizerIntent(false)
+                PlayerConstants.REPEAT_MODE_ALL -> {
+                    if (hasNextMediaItem()) {
+                        seekToNext()
+                    }
+                }
+
+                else -> {
+                    if (localCurrentMediaItemIndex < playlist.size - 1) {
+                        seekToNext()
+                    } else {
+                        notifyEqualizerIntent(false)
+                    }
                 }
             }
         }
+    }
+
+    /**
+     * Trigger crossfade to next track
+     * Called when current track is near end (crossfadeDurationMs before EOS)
+     */
+    private fun triggerCrossfadeTransition(nextIndex: Int) {
+        if (nextIndex !in playlist.indices || isCrossfading) return
+
+        coroutineScope.launch {
+            try {
+                isCrossfading = true
+                val nextMediaItem = playlist[nextIndex]
+                val nextVideoId = nextMediaItem.mediaId
+
+                Logger.d(TAG, "🔀 Starting crossfade to track $nextIndex")
+
+                // Get or create secondary player
+                val cachedPlayer = precachedPlayers.remove(nextVideoId)
+                val nextPlayer = if (cachedPlayer?.player != null) {
+                    cachedPlayer.player
+                } else {
+                    // Extract and create player
+                    val uri = extractPlayableUrl(nextMediaItem)
+                    if (uri == null || uri.second.isEmpty()) {
+                        Logger.e(TAG, "Failed to extract URL for crossfade")
+                        isCrossfading = false
+                        seekTo(nextIndex, 0) // Fallback to normal transition
+                        return@launch
+                    }
+                    createMediaPlayerInternal(uri.first, uri.second)
+                }
+
+                // Setup secondary player
+                secondaryPlayer = nextPlayer
+                setupPlayerListenersInternal(nextPlayer.playerBin)
+                nextPlayer.setVolume(0.0) // Start with volume 0
+                nextPlayer.setState(State.PLAYING)
+
+                // Update current index and notify metadata change BEFORE crossfade starts
+                localCurrentMediaItemIndex = nextIndex
+
+                // Notify listeners about track transition immediately
+                playlist.getOrNull(nextIndex)?.let { mediaItem ->
+                    listeners.forEach {
+                        it.onMediaItemTransition(
+                            mediaItem,
+                            PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_AUTO
+                        )
+                    }
+                }
+
+                // Perform crossfade
+                performCrossfade(nextIndex, nextPlayer)
+
+            } catch (e: Exception) {
+                Logger.e(TAG, "Crossfade error: ${e.message}", e)
+                isCrossfading = false
+                // Fallback to normal transition
+                seekTo(nextIndex, 0)
+            }
+        }
+    }
+
+    /**
+     * Perform the actual crossfade animation
+     */
+    private suspend fun performCrossfade(nextIndex: Int, nextPlayer: GstreamerPlayer) {
+        val steps = 50 // 50 steps for smooth transition
+        val delayPerStep = crossfadeDurationMs / steps
+        val targetVolume = internalVolume.toDouble()
+
+        crossfadeJob?.cancel()
+        crossfadeJob = coroutineScope.launch {
+            try {
+                for (step in 0..steps) {
+                    if (!isActive) break
+
+                    val progress = step.toFloat() / steps
+
+                    // Fade out current player
+                    val fadeOutVolume = targetVolume * (1.0 - progress)
+                    currentPlayer?.setVolume(fadeOutVolume)
+
+                    // Fade in next player
+                    val fadeInVolume = targetVolume * progress
+                    nextPlayer.setVolume(fadeInVolume)
+
+                    delay(delayPerStep.toLong())
+                }
+
+                // Transition complete
+                finalizeCrossfade(nextIndex, nextPlayer)
+
+            } catch (e: CancellationException) {
+                Logger.d(TAG, "Crossfade cancelled")
+                // Cleanup
+                nextPlayer.release()
+                secondaryPlayer = null
+                isCrossfading = false
+            }
+        }
+    }
+
+    /**
+     * Finalize crossfade: swap players and cleanup
+     */
+    private fun finalizeCrossfade(nextIndex: Int, nextPlayer: GstreamerPlayer) {
+        Logger.d(TAG, "🔀 Crossfade complete, swapping players")
+
+        // Cleanup old current player
+        cleanupCurrentPlayerInternal()
+
+        // Promote secondary to current
+        currentPlayer = nextPlayer
+        secondaryPlayer = null
+        localCurrentMediaItemIndex = nextIndex
+
+        // Ensure correct volume
+        currentPlayer?.setVolume(internalVolume.toDouble())
+
+        // Reset state
+        isCrossfading = false
+        transitionToState(InternalState.PLAYING)
+
+        // Notify listeners
+        playlist.getOrNull(nextIndex)?.let { mediaItem ->
+            listeners.forEach {
+                it.onMediaItemTransition(
+                    mediaItem,
+                    PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_AUTO
+                )
+            }
+        }
+
+        // Start position tracking
+        startPositionUpdates()
+
+        // Trigger next precache
+        triggerPrecachingInternal()
     }
 
     /**
@@ -1262,6 +1458,23 @@ class GstreamerPlayerAdapter(
 
                                 if (pos > 0) cachedPosition = pos
                                 if (dur > 0) cachedDuration = dur
+
+                                // Check if should trigger crossfade
+                                if (crossfadeEnabled &&
+                                    !isCrossfading &&
+                                    dur > 0 &&
+                                    pos > 0 &&
+                                    currentMediaItem?.isVideo() != true) {
+
+                                    val timeRemaining = dur - pos
+                                    if (timeRemaining in 1..crossfadeDurationMs) {
+                                        // Trigger crossfade
+                                        if (hasNextMediaItem()) {
+                                            val nextIndex = getNextMediaItemIndex()
+                                            triggerCrossfadeTransition(nextIndex)
+                                        }
+                                    }
+                                }
                             }
                         }
                     } catch (e: Exception) {
