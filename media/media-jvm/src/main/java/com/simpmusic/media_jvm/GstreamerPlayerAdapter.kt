@@ -1334,18 +1334,8 @@ class GstreamerPlayerAdapter(
                 nextPlayer.setVolume(0.0) // Start with volume 0
                 nextPlayer.setState(State.PLAYING)
 
-                // Update current index and notify metadata change BEFORE crossfade starts
-                localCurrentMediaItemIndex = nextIndex
-
-                // Notify listeners about track transition immediately
-                playlist.getOrNull(nextIndex)?.let { mediaItem ->
-                    listeners.forEach {
-                        it.onMediaItemTransition(
-                            mediaItem,
-                            PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_AUTO
-                        )
-                    }
-                }
+                // ⚠️ DO NOT update index here - will be done in finalizeCrossfade()
+                // ⚠️ DO NOT notify listeners here - will cause double transition
 
                 // Perform crossfade
                 performCrossfade(nextIndex, nextPlayer)
@@ -1405,8 +1395,19 @@ class GstreamerPlayerAdapter(
     private fun finalizeCrossfade(nextIndex: Int, nextPlayer: GstreamerPlayer) {
         Logger.d(TAG, "🔀 Crossfade complete, swapping players")
 
-        // Cleanup old current player
-        cleanupCurrentPlayerInternal()
+        // Cleanup old current player WITHOUT touching bus listeners
+        // (bus listeners are already setup for nextPlayer)
+        stopPositionUpdates()
+
+        // Cleanup the old current player manually
+        currentPlayer?.let { oldPlayer ->
+            try {
+                oldPlayer.playerBin.stop()
+                oldPlayer.videoComponent?.element?.dispose()
+            } catch (e: Exception) {
+                Logger.w(TAG, "Error cleaning up old player: ${e.message}")
+            }
+        }
 
         // Promote secondary to current
         currentPlayer = nextPlayer
