@@ -43,6 +43,7 @@ import com.maxrave.kotlinytmusicscraper.models.response.NextResponse
 import com.maxrave.kotlinytmusicscraper.models.response.PipedResponse
 import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
 import com.maxrave.kotlinytmusicscraper.models.response.SearchResponse
+import com.maxrave.kotlinytmusicscraper.models.response.SimpMusicChartResponse
 import com.maxrave.kotlinytmusicscraper.models.response.toLikeStatus
 import com.maxrave.kotlinytmusicscraper.models.response.toListAccountInfo
 import com.maxrave.kotlinytmusicscraper.models.simpmusic.FdroidResponse
@@ -2052,6 +2053,11 @@ class YouTube {
     suspend fun removeFromLiked(mediaId: String) =
         runCatching {
             ytMusic.removeFromLiked(mediaId).status.value
+        }
+
+    suspend fun getSimpMusicChart() =
+        runCatching {
+            ytMusic.getSimpMusicChart().body<SimpMusicChartResponse>()
         }
 
     private fun getNParam(listFormat: List<PlayerResponse.StreamingData.Format>): String? =

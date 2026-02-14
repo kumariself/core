@@ -18,6 +18,7 @@ import com.maxrave.domain.data.model.browse.playlist.Author
 import com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse
 import com.maxrave.domain.data.model.searchResult.playlists.PlaylistsResult
 import com.maxrave.domain.data.model.searchResult.songs.Thumbnail
+import com.maxrave.domain.data.type.ChartItem
 import com.maxrave.domain.data.type.PlaylistType
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.manager.DataStoreManager
@@ -615,14 +616,15 @@ internal class PlaylistRepositoryImpl(
                     if (listItem.isNotEmpty()) {
                         emit(listItem)
                         val account = localDataSource.getUsedGoogleAccount()
-                        val isNeeded = dataStoreManager.keepYouTubePlaylistOffline.first() == DataStoreManager.TRUE
-                            && dataStoreManager.loggedIn.first() == DataStoreManager.TRUE && account != null
+                        val isNeeded =
+                            dataStoreManager.keepYouTubePlaylistOffline.first() == DataStoreManager.TRUE &&
+                                dataStoreManager.loggedIn.first() == DataStoreManager.TRUE && account != null
                         if (isNeeded) {
                             insertYourYouTubePlaylist(
                                 YourYouTubePlaylistList(
                                     emailPageId = "${account.email}_${account.pageId ?: ""}",
                                     listBrowseIds = listItem.map { it.browseId },
-                                )
+                                ),
                             )
                         }
                     } else {
@@ -632,31 +634,36 @@ internal class PlaylistRepositoryImpl(
                     Logger.e("Library", "Error: ${e.message}")
                     e.printStackTrace()
                     val account = localDataSource.getUsedGoogleAccount()
-                    val isNeeded = dataStoreManager.keepYouTubePlaylistOffline.first() == DataStoreManager.TRUE
-                        && dataStoreManager.loggedIn.first() == DataStoreManager.TRUE && account != null
+                    val isNeeded =
+                        dataStoreManager.keepYouTubePlaylistOffline.first() == DataStoreManager.TRUE &&
+                            dataStoreManager.loggedIn.first() == DataStoreManager.TRUE && account != null
                     if (isNeeded) {
-                        val list = getYourYouTubePlaylistList("${account.email}_${account.pageId ?: ""}")
-                            .lastOrNull()
+                        val list =
+                            getYourYouTubePlaylistList("${account.email}_${account.pageId ?: ""}")
+                                .lastOrNull()
                         if (list != null) {
-                            emit(list.listBrowseIds.mapNotNull { id ->
-                                getPlaylist(id).lastOrNull()?.let {
-                                    PlaylistsResult(
-                                        author = it.author ?: "",
-                                        browseId = it.id,
-                                        category = "",
-                                        itemCount = "${ it.trackCount }",
-                                        resultType = "",
-                                        thumbnails = listOf(
-                                            Thumbnail(
-                                                width = 544,
-                                                url = it.thumbnails,
-                                                height = 544
-                                            )
-                                        ),
-                                        title = it.title
-                                    )
-                                }
-                            })
+                            emit(
+                                list.listBrowseIds.mapNotNull { id ->
+                                    getPlaylist(id).lastOrNull()?.let {
+                                        PlaylistsResult(
+                                            author = it.author ?: "",
+                                            browseId = it.id,
+                                            category = "",
+                                            itemCount = "${ it.trackCount }",
+                                            resultType = "",
+                                            thumbnails =
+                                                listOf(
+                                                    Thumbnail(
+                                                        width = 544,
+                                                        url = it.thumbnails,
+                                                        height = 544,
+                                                    ),
+                                                ),
+                                            title = it.title,
+                                        )
+                                    }
+                                },
+                            )
                         } else {
                             emit(null)
                         }
@@ -747,15 +754,47 @@ internal class PlaylistRepositoryImpl(
                 }
         }.flowOn(Dispatchers.IO)
 
-    override suspend fun insertYourYouTubePlaylist(yourYouTubePlaylist: YourYouTubePlaylistList) = withContext(Dispatchers.IO) {
-        localDataSource.insertYourYouTubePlaylist(yourYouTubePlaylist)
-    }
+    override suspend fun insertYourYouTubePlaylist(yourYouTubePlaylist: YourYouTubePlaylistList) =
+        withContext(Dispatchers.IO) {
+            localDataSource.insertYourYouTubePlaylist(yourYouTubePlaylist)
+        }
 
-    override suspend fun deleteAllYourYouTubePlaylist() = withContext(Dispatchers.IO) {
-        localDataSource.deleteAllYourYouTubePlaylist()
-    }
+    override suspend fun deleteAllYourYouTubePlaylist() =
+        withContext(Dispatchers.IO) {
+            localDataSource.deleteAllYourYouTubePlaylist()
+        }
 
-    override fun getYourYouTubePlaylistList(emailPageId: String): Flow<YourYouTubePlaylistList?> = flow {
-        emit(localDataSource.getYourYouTubePlaylistList(emailPageId))
-    }.flowOn(Dispatchers.IO)
+    override fun getYourYouTubePlaylistList(emailPageId: String): Flow<YourYouTubePlaylistList?> =
+        flow {
+            emit(localDataSource.getYourYouTubePlaylistList(emailPageId))
+        }.flowOn(Dispatchers.IO)
+
+    override fun getChartPlaylist(): Flow<Resource<List<ChartItem>>> =
+        flow {
+            youTube
+                .getSimpMusicChart()
+                .onSuccess { response ->
+                    val data = response.data?.filterNotNull() ?: emptyList()
+                    val result =
+                        data.mapNotNull {
+                            ChartItem(
+                                country =
+                                    when (it.country) {
+                                        "global" -> ChartItem.Country.GLOBAL
+                                        "vn" -> ChartItem.Country.VIETNAM
+                                        "it" -> ChartItem.Country.ITALY
+                                        "in" -> ChartItem.Country.INDIA
+                                        "id" -> ChartItem.Country.INDONESIA
+                                        "br" -> ChartItem.Country.BRAZIL
+                                        else -> return@mapNotNull null
+                                    },
+                                ytPlaylistId = it.youtubePlaylistId ?: return@mapNotNull null,
+                            )
+                        }
+                    emit(Resource.Success(result))
+                }.onFailure { exception ->
+                    exception.printStackTrace()
+                    emit(Resource.Error<List<ChartItem>>(exception.message ?: "Unknown error"))
+                }
+        }.flowOn(Dispatchers.IO)
 }

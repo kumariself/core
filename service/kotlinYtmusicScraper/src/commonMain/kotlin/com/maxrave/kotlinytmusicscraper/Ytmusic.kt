@@ -372,6 +372,12 @@ class Ytmusic {
         parameter("prettyPrint", false)
     }
 
+    suspend fun getSimpMusicChart() =
+        httpClient.get("https://chart.simpmusic.org/api/playlists") {
+            accept(ContentType.Application.Json)
+            contentType(ContentType.Application.Json)
+        }
+
     suspend fun test403Error(url: String): Boolean = httpClient.get(url).status.value in 200..299
 
     suspend fun player(
