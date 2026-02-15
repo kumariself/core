@@ -59,9 +59,7 @@ import com.maxrave.domain.repository.SearchRepository
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.logger.Logger
-import com.maxrave.media3.exoplayer.CrossfadeExoPlayerAdapter
 import com.maxrave.media3.exoplayer.ExoPlayerAdapter
-import com.maxrave.media3.exoplayer.ExoPlayerFactory
 import com.maxrave.media3.repository.CacheRepositoryImpl
 import com.maxrave.media3.service.SimpleMediaService
 import com.maxrave.media3.service.callback.SimpleMediaSessionCallback
@@ -191,30 +189,8 @@ private val mediaServiceModule =
             provideCoilBitmapLoader(androidContext(), get(named(SERVICE_SCOPE)))
         }
 
-        // ExoPlayerAdapter (thin wrapper, not crossfade-aware)
-        single<ExoPlayerAdapter>(createdAtStart = true) {
-            ExoPlayerAdapter(get(named(MAIN_PLAYER)))
-        }
-
-        // ExoPlayerFactory (creates secondary ExoPlayer instances for crossfade)
-        single<ExoPlayerFactory>(createdAtStart = true) {
-            ExoPlayerFactory(
-                context = androidContext(),
-                audioAttributes = get(),
-                mergingMediaSourceFactory = get(),
-                renderersFactory = get(),
-            )
-        }
-
-        // CrossfadeExoPlayerAdapter as the main MediaPlayerInterface
         single<MediaPlayerInterface>(createdAtStart = true) {
-            CrossfadeExoPlayerAdapter(
-                primaryAdapter = get<ExoPlayerAdapter>(),
-                primaryExoPlayer = get(named(MAIN_PLAYER)),
-                exoPlayerFactory = get(),
-                coroutineScope = get(named(SERVICE_SCOPE)),
-                dataStoreManager = get(),
-            )
+            ExoPlayerAdapter(get(named(MAIN_PLAYER)))
         }
 
         // MediaSession Callback for main player
