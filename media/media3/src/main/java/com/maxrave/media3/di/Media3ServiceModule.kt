@@ -10,6 +10,7 @@ import androidx.annotation.OptIn
 import androidx.core.net.toUri
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.Player
 import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.DatabaseProvider
@@ -32,8 +33,8 @@ import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.common.Player
 import androidx.media3.extractor.ExtractorsFactory
+import androidx.media3.extractor.flac.FlacExtractor
 import androidx.media3.extractor.mkv.MatroskaExtractor
 import androidx.media3.extractor.mp4.FragmentedMp4Extractor
 import androidx.media3.extractor.mp4.Mp4Extractor
@@ -81,6 +82,7 @@ import org.koin.core.context.loadKoinModules
 import org.koin.core.qualifier.named
 import org.koin.dsl.module
 import java.net.Proxy
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Required repository first initialization
@@ -320,6 +322,9 @@ private fun provideResolvingDataSourceFactory(
 private fun provideExtractorFactory(): ExtractorsFactory =
     ExtractorsFactory {
         arrayOf(
+            FlacExtractor(
+                FlacExtractor.FLAG_DISABLE_ID3_METADATA,
+            ),
             MatroskaExtractor(
                 DefaultSubtitleParserFactory(),
             ),
@@ -435,6 +440,8 @@ private fun provideCacheDataSource(
                             OkHttpDataSource.Factory(
                                 OkHttpClient
                                     .Builder()
+                                    .connectTimeout(30.seconds)
+                                    .readTimeout(30.seconds)
                                     .proxy(
                                         proxy,
                                     ).addInterceptor(

@@ -886,6 +886,21 @@ class Ytmusic {
             true
         }
     }
+
+    suspend fun searchTidalId(
+        url: String,
+        query: String,
+    ) = httpClient.get("$url/search") {
+        parameter("s", query)
+    }
+
+    suspend fun getTidalStream(
+        url: String,
+        tidalId: String,
+    ) = httpClient.get("$url/track") {
+        parameter("id", tidalId)
+        parameter("quality", "HIGH")
+    }
 }
 
 expect fun getCountry(): String

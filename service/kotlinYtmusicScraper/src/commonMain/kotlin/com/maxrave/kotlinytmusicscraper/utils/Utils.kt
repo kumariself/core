@@ -1,7 +1,11 @@
 package com.maxrave.kotlinytmusicscraper.utils
 
+import com.maxrave.kotlinytmusicscraper.models.response.AudioData
+import com.maxrave.logger.Logger
+import kotlinx.serialization.json.Json
 import java.security.MessageDigest
 import java.time.Instant
+import kotlin.io.encoding.Base64
 
 fun ByteArray.toHex(): String = joinToString(separator = "") { eachByte -> "%02x".format(eachByte) }
 
@@ -66,4 +70,26 @@ fun generateNetscapeCookies(
             }.joinToString("\n")
 
     return header + cookieLines
+}
+
+fun String.decodeTidalManifest(): AudioData? {
+    val decodedBytes = Base64.decode(this)
+    val jsonString = decodedBytes.decodeToString()
+    val json =
+        Json {
+            explicitNulls = false
+            ignoreUnknownKeys = true
+        }
+    return try {
+        json.decodeFromString<AudioData?>(jsonString)
+    } catch (e: Exception) {
+        Logger.e("Utils", "Failed to decode Tidal manifest: ${e.message}")
+        e.printStackTrace()
+        null
+    }
+}
+
+fun String.decodeBase64(): String {
+    val decodedBytes = Base64.decode(this)
+    return decodedBytes.decodeToString()
 }

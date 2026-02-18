@@ -44,6 +44,8 @@ import com.maxrave.kotlinytmusicscraper.models.response.PipedResponse
 import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
 import com.maxrave.kotlinytmusicscraper.models.response.SearchResponse
 import com.maxrave.kotlinytmusicscraper.models.response.SimpMusicChartResponse
+import com.maxrave.kotlinytmusicscraper.models.response.TidalSearchResponse
+import com.maxrave.kotlinytmusicscraper.models.response.TidalStreamResponse
 import com.maxrave.kotlinytmusicscraper.models.response.toLikeStatus
 import com.maxrave.kotlinytmusicscraper.models.response.toListAccountInfo
 import com.maxrave.kotlinytmusicscraper.models.simpmusic.FdroidResponse
@@ -102,6 +104,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import okio.Path
 import kotlin.jvm.JvmInline
+import kotlin.math.abs
 import kotlin.math.round
 import kotlin.random.Random
 import kotlin.time.Clock
@@ -2059,6 +2062,23 @@ class YouTube {
         runCatching {
             ytMusic.getSimpMusicChart().body<SimpMusicChartResponse>()
         }
+
+    suspend fun getTidalStream(
+        url: String,
+        query: String,
+        durationSeconds: Int,
+    ) = runCatching {
+        val searchRes = ytMusic.searchTidalId(url, query).body<TidalSearchResponse>()
+        val trackId =
+            (
+                searchRes.data
+                    ?.items
+                    ?.filter { it?.duration?.let { dur -> abs(dur - durationSeconds) <= 1 } ?: false }
+                    ?.minByOrNull { abs((it?.duration ?: 0) - durationSeconds) }
+            )?.id ?: throw Exception("No matching track found")
+        val streamRes = ytMusic.getTidalStream(url, "$trackId").body<TidalStreamResponse>()
+        streamRes
+    }
 
     private fun getNParam(listFormat: List<PlayerResponse.StreamingData.Format>): String? =
         listFormat

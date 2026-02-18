@@ -18,6 +18,8 @@ import com.maxrave.domain.utils.Resource
 import com.maxrave.kotlinytmusicscraper.YouTube
 import com.maxrave.kotlinytmusicscraper.models.MediaType
 import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
+import com.maxrave.kotlinytmusicscraper.utils.decodeBase64
+import com.maxrave.kotlinytmusicscraper.utils.decodeTidalManifest
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -184,6 +186,52 @@ internal class StreamRepositoryImpl(
                     Logger.w("Stream", "format: $format")
                     Logger.d("Stream", "expireInSeconds ${response.streamingData?.expiresInSeconds}")
                     Logger.w("Stream", "expired at ${now().plusSeconds(response.streamingData?.expiresInSeconds?.toLong() ?: 0L)}")
+                    val prefer320kbps = dataStoreManager.prefer320kbpsStream.first() == DataStoreManager.TRUE
+                    val durationSecond = response.videoDetails?.lengthSeconds?.toIntOrNull()
+                    if (prefer320kbps && !isVideo && durationSecond != null) {
+                        val your320kbpsUrl = dataStoreManager.your320kbpsUrl.first()
+                        Logger.d("Stream", "Prefer 320kbps enabled ${response.videoDetails}")
+                        val title = response.videoDetails?.title ?: ""
+                        val author = response.videoDetails?.author ?: ""
+                        val q =
+                            "$title $author"
+                                .replace(
+                                    Regex("\\((feat\\.|ft.|cùng với|con|mukana|com|avec|合作音乐人: ) "),
+                                    " ",
+                                ).replace(
+                                    Regex("( và | & | и | e | und |, |和| dan)"),
+                                    " ",
+                                ).replace("  ", " ")
+                                .replace(Regex("([()])"), "")
+                                .replace(".", " ")
+                                .replace("  ", " ")
+                        Logger.d("Stream", "Search query for 320kbps: $q")
+                        val res = youTube.getTidalStream(your320kbpsUrl, q, durationSecond).getOrNull()
+                        Logger.w("Stream", "Tidal response: $res")
+                        val audioData = res?.data?.manifest?.decodeTidalManifest()
+                        if (audioData != null) {
+                            Logger.d("Stream", "Found potential 320kbps stream from Tidal: $res")
+                            format =
+                                format?.copy(
+                                    itag = 320,
+                                    url = audioData.urls.firstOrNull() ?: format.url,
+                                    mimeType = "${audioData.mimeType}; codecs=\"${audioData.codecs}\"",
+                                )
+                        } else if (res
+                                ?.data
+                                ?.manifest
+                                ?.decodeBase64()
+                                ?.contains("MPD") == true
+                        ) {
+                            Logger.d("Stream", "Found potential 320kbps stream from Tidal manifest DASH: ${res.data?.manifest}")
+                            format =
+                                format?.copy(
+                                    itag = 320,
+                                    url = res.data?.manifest?.decodeBase64(),
+                                    mimeType = audioData?.mimeType ?: format.mimeType,
+                                )
+                        }
+                    }
                     insertNewFormat(
                         NewFormatEntity(
                             videoId = if (VIDEO_QUALITY.itags.contains(format?.itag)) "${MERGING_DATA_TYPE.VIDEO}$videoId" else videoId,
@@ -226,13 +274,15 @@ internal class StreamRepositoryImpl(
                                 ),
                             cpn = data.first,
                             expiredTime = now().plusSeconds(response.streamingData?.expiresInSeconds?.toLong() ?: 0L),
-                            audioUrl = if (muxed) response.streamingData?.hlsManifestUrl else (superFormat?.url ?: audioFormat?.url),
+                            audioUrl = if (muxed) response.streamingData?.hlsManifestUrl else format?.url,
                             videoUrl = if (muxed) response.streamingData?.hlsManifestUrl else videoFormat?.url,
                         ),
                     )
                     if (data.first != null) {
                         emit(
-                            if (muxed) {
+                            if (prefer320kbps) {
+                                format?.url
+                            } else if (muxed) {
                                 response.streamingData?.hlsManifestUrl
                             } else {
                                 format?.url?.let { url ->
@@ -246,7 +296,9 @@ internal class StreamRepositoryImpl(
                         )
                     } else {
                         emit(
-                            if (muxed) {
+                            if (prefer320kbps) {
+                                format?.url
+                            } else if (muxed) {
                                 response.streamingData?.hlsManifestUrl
                             } else {
                                 format?.url?.let { url ->

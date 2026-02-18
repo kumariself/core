@@ -9,6 +9,7 @@ import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.dash.manifest.DashManifestParser
 import androidx.media3.exoplayer.offline.Download
 import androidx.media3.exoplayer.offline.DownloadManager
 import androidx.media3.exoplayer.offline.DownloadNotificationHelper
@@ -37,6 +38,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
+import java.io.ByteArrayInputStream
 import java.util.concurrent.Executor
 
 @UnstableApi
@@ -118,6 +120,12 @@ internal class DownloadUtils(
                             isVideo = false,
                         ).lastOrNull()
                         ?.let {
+                            if (it.contains("MPD")) {
+                                DashManifestParser().parse(
+                                    it.toUri(),
+                                    ByteArrayInputStream(it.toByteArray()),
+                                )
+                            }
                             dataSpecReturn = dataSpec.withUri(it.toUri())
                         }
                 }

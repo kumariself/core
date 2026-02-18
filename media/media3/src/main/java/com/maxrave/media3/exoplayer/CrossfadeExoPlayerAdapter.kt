@@ -1221,10 +1221,6 @@ internal class CrossfadeExoPlayerAdapter(
         val listener =
             object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {
-                    if (player != currentPlayer) {
-                        Logger.d(TAG, "Ignoring onPlaybackStateChanged from non-current player")
-                        return
-                    }
                     when (playbackState) {
                         Player.STATE_ENDED -> {
                             Logger.d(TAG, "End of stream reached")
