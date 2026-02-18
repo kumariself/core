@@ -282,7 +282,7 @@ internal class CrossfadeExoPlayerAdapter(
                     DefaultAudioSink
                         .Builder(context)
                         .setEnableFloatOutput(enableFloatOutput)
-                        .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                        .setEnableAudioOutputPlaybackParameters(enableAudioTrackPlaybackParams)
                         .setAudioProcessorChain(
                             DefaultAudioSink.DefaultAudioProcessorChain(
                                 arrayOf(crossfadeFilter),
@@ -513,6 +513,19 @@ internal class CrossfadeExoPlayerAdapter(
                 secondaryPlayer = null
                 secondaryPlayerFilter = null
                 setCrossfading(false)
+                if (crossfadeFromIndex >= 0) {
+                    localCurrentMediaItemIndex = crossfadeFromIndex
+                    playlist.getOrNull(crossfadeFromIndex)?.let { mediaItem ->
+                        listeners.forEach {
+                            it.onMediaItemTransition(
+                                mediaItem,
+                                PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_SEEK,
+                            )
+                        }
+                    }
+                    forwardingPlayer.notifyMediaItemChanged()
+                    crossfadeFromIndex = -1
+                }
             }
         }
 
@@ -1024,7 +1037,6 @@ internal class CrossfadeExoPlayerAdapter(
 
             InternalState.PREPARING -> {
                 listeners.forEach { it.onPlaybackStateChanged(PlayerConstants.STATE_BUFFERING) }
-                listeners.forEach { it.onIsLoadingChanged(true) }
             }
 
             InternalState.READY -> {
@@ -1209,6 +1221,10 @@ internal class CrossfadeExoPlayerAdapter(
         val listener =
             object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (player != currentPlayer) {
+                        Logger.d(TAG, "Ignoring onPlaybackStateChanged from non-current player")
+                        return
+                    }
                     when (playbackState) {
                         Player.STATE_ENDED -> {
                             Logger.d(TAG, "End of stream reached")
@@ -1219,7 +1235,7 @@ internal class CrossfadeExoPlayerAdapter(
                         Player.STATE_READY -> {
                             // Always clear loading state when ExoPlayer is ready
                             // (handles both initial load AND mid-playback rebuffer)
-                            if (cachedIsLoading) {
+                            if (cachedIsLoading && player == currentPlayer) {
                                 cachedIsLoading = false
                                 listeners.forEach { it.onIsLoadingChanged(false) }
                             }
@@ -1230,15 +1246,15 @@ internal class CrossfadeExoPlayerAdapter(
 
                         Player.STATE_BUFFERING -> {
                             // Playback is stalled waiting for data — report buffering
-                            if (!cachedIsLoading) {
-                                cachedIsLoading = true
-                                listeners.forEach { it.onIsLoadingChanged(true) }
-                            }
                         }
                     }
                 }
 
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    if (player != currentPlayer) {
+                        Logger.d(TAG, "Ignoring onPlaybackStateChanged from non-current player")
+                        return
+                    }
                     if (isPlaying) {
                         if (internalState != InternalState.PLAYING) {
                             transitionToState(InternalState.PLAYING)
@@ -1255,6 +1271,10 @@ internal class CrossfadeExoPlayerAdapter(
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
+                    if (player != currentPlayer) {
+                        Logger.d(TAG, "Ignoring onPlaybackStateChanged from non-current player")
+                        return
+                    }
                     val genericError =
                         PlayerError(
                             errorCode =
@@ -1276,13 +1296,19 @@ internal class CrossfadeExoPlayerAdapter(
                     // playback is actually stalled (STATE_BUFFERING), otherwise the UI
                     // would show a buffering indicator continuously during normal playback.
                     val isPlaybackStalled = isLoading && player.playbackState == Player.STATE_BUFFERING
-                    if (cachedIsLoading != isPlaybackStalled) {
+                    val isCurrentPlayer = player == currentPlayer
+                    Logger.d(TAG, "onIsLoadingChanged: isLoading=$isLoading, isPlaybackStalled=$isPlaybackStalled, isCurrentPlayer=$isCurrentPlayer")
+                    if (cachedIsLoading != isPlaybackStalled && isCurrentPlayer) {
                         cachedIsLoading = isPlaybackStalled
                         listeners.forEach { it.onIsLoadingChanged(isPlaybackStalled) }
                     }
                 }
 
                 override fun onTracksChanged(tracks: Tracks) {
+                    if (player != currentPlayer) {
+                        Logger.d(TAG, "Ignoring onPlaybackStateChanged from non-current player")
+                        return
+                    }
                     val genericTracks = tracks.toGenericTracks()
                     listeners.forEach { it.onTracksChanged(genericTracks) }
                 }
@@ -1291,6 +1317,10 @@ internal class CrossfadeExoPlayerAdapter(
                     player: Player,
                     events: Player.Events,
                 ) {
+                    if (player != currentPlayer) {
+                        Logger.d(TAG, "Ignoring onPlaybackStateChanged from non-current player")
+                        return
+                    }
                     val shouldBePlaying =
                         !(player.playbackState == Player.STATE_ENDED || !player.playWhenReady)
                     if (events.containsAny(
@@ -1359,8 +1389,7 @@ internal class CrossfadeExoPlayerAdapter(
         val shouldCrossfade =
             crossfadeEnabled &&
                 hasNextMediaItem() &&
-                !isCrossfading &&
-                currentMediaItem?.isVideo() != true // No crossfade for video
+                !isCrossfading
 
         if (shouldCrossfade) {
             val nextIndex = getNextMediaItemIndex()
@@ -1594,7 +1623,7 @@ internal class CrossfadeExoPlayerAdapter(
         // DJ crossfade filter frequency bounds
         private const val LPF_START_HZ = 20000f // Low-pass starts wide open
         private const val LPF_END_HZ = 100f // Low-pass ends muffled
-        private const val HPF_START_HZ = 3000f // High-pass starts cutting bass
+        private const val HPF_START_HZ = 5000f // High-pass starts cutting bass
         private const val HPF_END_HZ = 20f // High-pass ends wide open
     }
 
