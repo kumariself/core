@@ -1862,8 +1862,12 @@ internal class MediaServiceHandlerImpl(
         _queueData.update {
             it
                 .copy(
+                    data =
+                        it.data.copy(
+                            listTracks = catalogMetadata,
+                        ),
                     queueState = QueueData.StateSource.STATE_INITIALIZED,
-                ).addTrackList(catalogMetadata)
+                )
         }
         reorderShuffledQueue(player.getCurrentMediaTimeLine())
     }
@@ -2247,11 +2251,12 @@ internal class MediaServiceHandlerImpl(
                     channelIds = song.artistId ?: emptyList(),
                     albumBrowseId = song.albumId,
                     durationSecond = song.durationSeconds.toLong(),
-                    listenedSecond = if (percent >= 0.8f) {
-                        song.durationSeconds.toLong()
-                    } else {
-                        (currentPositionMillis / 1000)
-                    },
+                    listenedSecond =
+                        if (percent >= 0.8f) {
+                            song.durationSeconds.toLong()
+                        } else {
+                            (currentPositionMillis / 1000)
+                        },
                 ).collect {
                     Logger.d(TAG, "Inserted playback event for ${song.title}: $it")
                 }
