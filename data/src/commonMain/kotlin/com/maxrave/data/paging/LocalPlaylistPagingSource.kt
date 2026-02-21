@@ -77,11 +77,22 @@ internal class LocalPlaylistTimeBasedPagingSource(
                     converter.fromTimestamp(currentPage)
                 }
             val pairs =
-                localDataSource.getPlaylistPairSongByTime(
-                    playlistId = playlistId,
-                    filterState = filter,
-                    localDateTime = timestamp ?: throw Exception("Invalid timestamp"),
-                )
+                localDataSource
+                    .getPlaylistPairSongByTime(
+                        playlistId = playlistId,
+                        filterState = filter,
+                        localDateTime = timestamp ?: throw Exception("Invalid timestamp"),
+                    ).let {
+                        if (currentPage == 0L && filter == FilterState.NewerFirst) {
+                            val newestPair =
+                                listOfNotNull(
+                                    localDataSource.getNewestPlaylistPairSong(playlistId = playlistId),
+                                )
+                            newestPair + (it ?: emptyList())
+                        } else {
+                            it
+                        }
+                    }
             Logger.d("LocalPlaylistPagingSource", "load: $pairs")
             val songs =
                 localDataSource
@@ -96,16 +107,20 @@ internal class LocalPlaylistTimeBasedPagingSource(
                     }
                 }
             Logger.d("LocalPlaylistPagingSource", "load: $songs")
+            val nextKey =
+                pairs?.lastOrNull()?.inPlaylist.let {
+                    converter.dateToTimestamp(it)
+                }
             return LoadResult.Page(
                 data = sorted,
-                prevKey = null,
+                prevKey = currentPage,
                 nextKey =
                     if (songs.isEmpty()) {
                         null
+                    } else if (nextKey == currentPage) {
+                        null
                     } else {
-                        pairs?.lastOrNull()?.inPlaylist.let {
-                            converter.dateToTimestamp(it)
-                        }
+                        nextKey
                     },
             )
         } catch (e: Exception) {
