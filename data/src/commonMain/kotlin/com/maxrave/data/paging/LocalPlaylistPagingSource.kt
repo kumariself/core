@@ -113,7 +113,7 @@ internal class LocalPlaylistTimeBasedPagingSource(
                 }
             return LoadResult.Page(
                 data = sorted,
-                prevKey = currentPage,
+                prevKey = null,
                 nextKey =
                     if (songs.isEmpty()) {
                         null
