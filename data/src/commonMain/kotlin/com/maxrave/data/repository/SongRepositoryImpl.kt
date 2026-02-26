@@ -1,7 +1,6 @@
 package com.maxrave.data.repository
 
 import com.maxrave.common.MERGING_DATA_TYPE
-import com.maxrave.common.QUALITY
 import com.maxrave.data.db.datasource.LocalDataSource
 import com.maxrave.data.extension.getFullDataFromDB
 import com.maxrave.data.mapping.toListTrack
@@ -14,6 +13,7 @@ import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.download.DownloadProgress
 import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
 import com.maxrave.domain.manager.DataStoreManager
+import com.maxrave.domain.manager.DataStoreManager.Values.TRUE
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.utils.Resource
 import com.maxrave.kotlinytmusicscraper.YouTube
@@ -355,8 +355,19 @@ internal class SongRepositoryImpl(
         isVideo: Boolean,
     ): Flow<DownloadProgress> =
         youTube
-            .download(track.toSongItemForDownload(), path, videoId, isVideo)
-            .map {
+            .download(
+                track.toSongItemForDownload(),
+                path,
+                videoId,
+                runBlocking {
+                    (
+                        dataStoreManager.prefer320kbpsStream.first() == TRUE &&
+                            dataStoreManager.your320kbpsUrl.first().isNotEmpty()
+                    ) to
+                        dataStoreManager.your320kbpsUrl.first()
+                },
+                isVideo,
+            ).map {
                 DownloadProgress(
                     audioDownloadProgress = it.audioDownloadProgress,
                     videoDownloadProgress = it.videoDownloadProgress,

@@ -48,7 +48,6 @@ import io.ktor.client.request.prepareRequest
 import io.ktor.client.request.setBody
 import io.ktor.client.request.url
 import io.ktor.client.statement.bodyAsChannel
-import io.ktor.client.utils.DEFAULT_HTTP_BUFFER_SIZE
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
@@ -57,7 +56,6 @@ import io.ktor.serialization.kotlinx.json.json
 import io.ktor.serialization.kotlinx.protobuf.protobuf
 import io.ktor.serialization.kotlinx.xml.xml
 import io.ktor.utils.io.readRemaining
-import kotlinx.coroutines.channels.onFailure
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -80,6 +78,11 @@ import okio.use
 import kotlin.time.ExperimentalTime
 
 private const val TAG = "YouTubeScraperClient"
+private const val DOWNLOAD_USER_AGENT =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+private const val DEFAULT_PARALLEL_DOWNLOADS = 4
+private const val CHUNK_SIZE = 1024L * 1024L // 1MB per chunk
 
 class Ytmusic {
     val normalJson =
@@ -89,6 +92,18 @@ class Ytmusic {
             encodeDefaults = true
         }
     private var httpClient = createClient()
+    private var downloadClient: HttpClient? = null
+
+    private fun getDownloadClient(): HttpClient =
+        downloadClient ?: HttpClient(getEngine()) {
+            expectSuccess = true
+            install(HttpRedirect) {
+                checkHttpMethod = false
+                allowHttpsDowngrade = true
+            }
+            // Disable logging for download - significantly improves performance
+            // Note: Don't install Logging plugin for download client
+        }.also { downloadClient = it }
 
     var cookiePath: Path? = null
 
@@ -808,34 +823,245 @@ class Ytmusic {
     fun download(
         url: String,
         pathString: String,
+        maxRetries: Int = 3,
+        parallelDownloads: Int = DEFAULT_PARALLEL_DOWNLOADS,
     ): Flow<Triple<Boolean, Float, Int>> =
-        // Boolean is for isDone
         channelFlow {
             val fileSystem = FileSystem.SYSTEM
             val path = pathString.toPath()
-            with(httpClient) {
-                val isExist = fileSystem.exists(path)
-                if (isExist) {
+            val downloadBufferSize = 256 * 1024
+
+            with(getDownloadClient()) {
+                var lastException: Throwable? = null
+
+                // First, check if server supports Range requests
+                val supportsRange =
                     try {
-                        fileSystem.delete(path)
-                    } catch (e: IOException) {
-                        e.printStackTrace()
+                        val rangeResponse =
+                            head(url) {
+                                header("User-Agent", DOWNLOAD_USER_AGENT)
+                                header("Range", "bytes=0-0")
+                            }
+                        rangeResponse.headers["Content-Range"] != null ||
+                            rangeResponse.status.value in 200..299
+                    } catch (e: Exception) {
+                        false
+                    }
+
+                // Get file size
+                val fileSize =
+                    try {
+                        head(url) {
+                            header("User-Agent", DOWNLOAD_USER_AGENT)
+                        }.headers[HttpHeaders.ContentLength]?.toLong() ?: 0L
+                    } catch (e: Exception) {
+                        0L
+                    }
+
+                // If server supports Range and file is large enough, use parallel download
+                if (supportsRange && fileSize > CHUNK_SIZE * 2) {
+                    parallelDownload(
+                        url = url,
+                        path = path,
+                        fileSize = fileSize,
+                        parallelDownloads = parallelDownloads,
+                        downloadBufferSize = downloadBufferSize,
+                        maxRetries = maxRetries,
+                        onProgress = { downloaded, speed ->
+                            trySend(Triple(false, downloaded, speed))
+                        },
+                        onComplete = { success, exception ->
+                            lastException = exception
+                            trySend(Triple(true, if (success) 1f else 0f, 0))
+                        },
+                    )
+                } else {
+                    // Fallback to single-threaded download
+                    singleThreadedDownload(
+                        url = url,
+                        path = path,
+                        maxRetries = maxRetries,
+                        downloadBufferSize = downloadBufferSize,
+                        onProgress = { downloaded, speed ->
+                            trySend(Triple(false, downloaded, speed))
+                        },
+                        onComplete = { success, exception ->
+                            lastException = exception
+                            trySend(Triple(true, if (success) 1f else 0f, 0))
+                        },
+                    )
+                }
+            }
+        }
+
+    private suspend fun HttpClient.parallelDownload(
+        url: String,
+        path: Path,
+        fileSize: Long,
+        parallelDownloads: Int,
+        downloadBufferSize: Int,
+        maxRetries: Int,
+        onProgress: suspend (Float, Int) -> Unit,
+        onComplete: (Boolean, Throwable?) -> Unit,
+    ) {
+        val fileSystem = FileSystem.SYSTEM
+        val chunkSize = fileSize / parallelDownloads
+        val tempDir = path.parent?.let { it / "temp_chunks" } ?: throw IllegalArgumentException("Path has no parent")
+
+        try {
+            // Create temp directory
+            fileSystem.createDirectories(tempDir)
+            val tempFiles =
+                (0 until parallelDownloads).map { index ->
+                    tempDir / "chunk_$index.tmp"
+                }
+
+            // Download each chunk in parallel
+            coroutineScope {
+                val jobs =
+                    (0 until parallelDownloads).map { index ->
+                        val startByte = index * chunkSize
+                        val endByte = if (index == parallelDownloads - 1) fileSize - 1L else (index + 1L) * chunkSize - 1L
+
+                        launch {
+                            var attempt = 0
+                            var success = false
+
+                            while (attempt <= maxRetries && !success) {
+                                try {
+                                    if (attempt > 0) {
+                                        delay(500L * (1L shl (attempt - 1)).coerceAtMost(10000L))
+                                    }
+
+                                    prepareRequest {
+                                        url(url)
+                                        header("User-Agent", DOWNLOAD_USER_AGENT)
+                                        header("Accept", "*/*")
+                                        header("Range", "bytes=$startByte-$endByte")
+                                    }.execute { res ->
+                                        val channel = res.bodyAsChannel()
+                                        fileSystem.sink(tempFiles[index]).buffer().use { sink ->
+                                            while (!channel.isClosedForRead) {
+                                                val packet = channel.readRemaining(downloadBufferSize.toLong())
+                                                while (!packet.exhausted()) {
+                                                    val bytes = packet.readByteArray()
+                                                    sink.write(bytes)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    success = true
+                                    Logger.d(TAG, "Chunk $index downloaded: $startByte-$endByte")
+                                } catch (e: Exception) {
+                                    Logger.e(TAG, "Chunk $index download failed: ${e.message}")
+                                    attempt++
+                                    if (attempt > maxRetries) {
+                                        throw e
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                // Wait for all chunks and track progress
+                var completedChunks = 0
+
+                // Simplified progress tracking - emit after each chunk completes
+                jobs.forEach { job ->
+                    launch {
+                        job.join()
+                        completedChunks++
+                        val downloaded = completedChunks * chunkSize
+                        val progress = downloaded.toFloat() / fileSize.toFloat()
+                        onProgress(progress, 0)
                     }
                 }
-                val length = head(url).headers[HttpHeaders.ContentLength]?.toLong() ?: 0
-                var downloadedBytes = 0L
-                var jobDone = 0
+
+                // Wait for all to complete
+                jobs.forEach { it.join() }
+            }
+
+            // Merge all chunks into final file
+            Logger.d(TAG, "Merging chunks into $path")
+            fileSystem.sink(path).buffer().use { finalSink ->
+                tempFiles.forEach { tempFile ->
+                    if (fileSystem.exists(tempFile)) {
+                        fileSystem.source(tempFile).use { source ->
+                            finalSink.writeAll(source)
+                        }
+                        fileSystem.delete(tempFile)
+                    }
+                }
+            }
+
+            // Cleanup temp directory
+            fileSystem.delete(tempDir)
+
+            Logger.d(TAG, "Parallel download completed: $fileSize bytes")
+            onComplete(true, null)
+        } catch (e: Exception) {
+            Logger.e(TAG, "Parallel download failed: ${e.message}")
+            // Cleanup temp directory
+            try {
+                if (fileSystem.exists(tempDir)) {
+                    fileSystem.deleteRecursively(tempDir)
+                }
+            } catch (ignored: Exception) {
+                // Ignore cleanup errors
+            }
+            onComplete(false, e)
+        }
+    }
+
+    private suspend fun HttpClient.singleThreadedDownload(
+        url: String,
+        path: Path,
+        maxRetries: Int,
+        downloadBufferSize: Int,
+        onProgress: suspend (Float, Int) -> Unit,
+        onComplete: (Boolean, Throwable?) -> Unit,
+    ) {
+        val fileSystem = FileSystem.SYSTEM
+        var lastException: Throwable? = null
+        var downloadedBytes = 0L
+        var jobDone = 0
+
+        repeat(maxRetries + 1) { attempt ->
+            if (jobDone == 1) return@repeat
+
+            if (attempt > 0) {
+                try {
+                    if (fileSystem.exists(path)) {
+                        fileSystem.delete(path)
+                    }
+                } catch (e: IOException) {
+                    e.printStackTrace()
+                }
+                downloadedBytes = 0L
+                val delayMs = (500L * (1 shl (attempt - 1))).coerceAtMost(10000L)
+                Logger.d(TAG, "Retry attempt $attempt after ${delayMs}ms delay")
+                delay(delayMs)
+            }
+
+            try {
+                val length =
+                    head(url) {
+                        header("User-Agent", DOWNLOAD_USER_AGENT)
+                    }.headers[HttpHeaders.ContentLength]?.toLong() ?: 0
+
                 coroutineScope {
                     val downloadJob =
                         launch {
                             runCatching {
                                 prepareRequest {
                                     url(url)
+                                    header("User-Agent", DOWNLOAD_USER_AGENT)
+                                    header("Accept", "*/*")
                                 }.execute { res ->
                                     val channel = res.bodyAsChannel()
-                                    fileSystem.appendingSink(path).buffer().use { sink ->
+                                    fileSystem.sink(path).buffer().use { sink ->
                                         while (!channel.isClosedForRead) {
-                                            val packet = channel.readRemaining(DEFAULT_HTTP_BUFFER_SIZE.toLong())
+                                            val packet = channel.readRemaining(downloadBufferSize.toLong())
                                             while (!packet.exhausted()) {
                                                 val bytes = packet.readByteArray()
                                                 sink.write(bytes)
@@ -845,39 +1071,54 @@ class Ytmusic {
                                     }
                                 }
                             }.onSuccess {
-                                Logger.d(TAG, "Downloaded $downloadedBytes bytes")
+                                Logger.d(TAG, "Download completed: $downloadedBytes bytes")
                                 jobDone = 1
                             }.onFailure { e ->
-                                e.printStackTrace()
+                                Logger.e(TAG, "Download failed: ${e.message}")
+                                lastException = e
                                 jobDone = 1
                             }
                         }
+
                     val emitJob =
                         launch {
-                            var seconds = 0f
-                            while (jobDone < 1 && downloadedBytes < length) {
-                                delay(100)
-                                seconds += 0.1f
-                                val progress = downloadedBytes.toFloat() / length
-                                val speed = (downloadedBytes / seconds / 1024).toInt()
-                                Logger.d(TAG, "Downloaded: $progress")
-                                Logger.d(TAG, "Speed: $speed KB/s")
-                                trySend(Triple(false, progress, speed))
-                                    .onFailure { e ->
-                                        e?.printStackTrace()
+                            var lastEmittedProgress = -1f
+                            while (jobDone < 1) {
+                                delay(200)
+                                if (length > 0) {
+                                    val progress = downloadedBytes.toFloat() / length
+                                    val progressDiff =
+                                        if (progress > lastEmittedProgress) {
+                                            progress - lastEmittedProgress
+                                        } else {
+                                            lastEmittedProgress - progress
+                                        }
+                                    if (progressDiff >= 0.01f || progress >= 1f) {
+                                        val elapsedSeconds = (downloadedBytes / 1024.0) / 200.0
+                                        val speed = if (elapsedSeconds > 0) (downloadedBytes / elapsedSeconds / 1024).toInt() else 0
+                                        lastEmittedProgress = progress
+                                        onProgress(progress, speed)
                                     }
+                                }
                             }
                         }
+
                     downloadJob.join()
-                    emitJob.join()
+                    emitJob.cancel()
                 }
-                Logger.d(TAG, "Downloaded $downloadedBytes bytes")
-                Logger.d(TAG, "Merged $pathString")
-                trySend(Triple(true, 1f, 0)).onFailure { e ->
-                    e?.printStackTrace()
+            } catch (e: Exception) {
+                Logger.e(TAG, "Download attempt $attempt failed: ${e.message}")
+                lastException = e
+                if (attempt == maxRetries) {
+                    jobDone = 1
                 }
             }
         }
+
+        Logger.d(TAG, "Download finished: $downloadedBytes bytes")
+        val isSuccess = lastException == null && downloadedBytes > 0
+        onComplete(isSuccess, lastException)
+    }
 
     suspend fun is403Url(url: String): Boolean {
         return try {
