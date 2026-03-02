@@ -127,6 +127,12 @@ internal class CrossfadeExoPlayerAdapter(
     @Volatile
     private var internalPlaybackSpeed = 1.0f
 
+    @Volatile
+    private var internalPlaybackPitch = 1.0f
+
+    @Volatile
+    private var internalSkipSilence = false
+
     // Position tracking - updated periodically, not on every query
     @Volatile
     private var cachedPosition = 0L
@@ -936,10 +942,14 @@ internal class CrossfadeExoPlayerAdapter(
         }
 
     override var playbackParameters: GenericPlaybackParameters
-        get() = GenericPlaybackParameters(internalPlaybackSpeed, internalPlaybackSpeed)
+        get() = GenericPlaybackParameters(internalPlaybackSpeed, internalPlaybackPitch)
         set(value) {
             internalPlaybackSpeed = value.speed
-            currentPlayer?.playbackParameters = PlaybackParameters(value.speed, value.pitch)
+            internalPlaybackPitch = value.pitch
+            val params = PlaybackParameters(value.speed, value.pitch)
+            currentPlayer?.playbackParameters = params
+            // Also apply to secondary player during crossfade
+            secondaryPlayer?.playbackParameters = params
         }
 
     // ========== Audio Settings ==========
@@ -957,9 +967,12 @@ internal class CrossfadeExoPlayerAdapter(
         }
 
     override var skipSilenceEnabled: Boolean
-        get() = currentPlayer?.skipSilenceEnabled ?: false
+        get() = internalSkipSilence
         set(value) {
+            internalSkipSilence = value
             currentPlayer?.skipSilenceEnabled = value
+            // Also apply to secondary player during crossfade
+            secondaryPlayer?.skipSilenceEnabled = value
         }
 
     // ========== Listener Management ==========
@@ -1167,7 +1180,8 @@ internal class CrossfadeExoPlayerAdapter(
 
                     // Apply settings
                     player.volume = internalVolume
-                    player.playbackParameters = PlaybackParameters(internalPlaybackSpeed)
+                    player.playbackParameters = PlaybackParameters(internalPlaybackSpeed, internalPlaybackPitch)
+                    player.skipSilenceEnabled = internalSkipSilence
 
                     // Seek if needed
                     if (startPositionMs > 0) {
@@ -1659,8 +1673,10 @@ internal class CrossfadeExoPlayerAdapter(
         nextPlayer.setAudioAttributes(audioAttributes, true)
         nextPlayer.setHandleAudioBecomingNoisy(true)
 
-        // Ensure correct volume
+        // Ensure correct volume and playback parameters
         currentPlayer?.volume = internalVolume
+        currentPlayer?.playbackParameters = PlaybackParameters(internalPlaybackSpeed, internalPlaybackPitch)
+        currentPlayer?.skipSilenceEnabled = internalSkipSilence
 
         // Reset state
         setCrossfading(false)

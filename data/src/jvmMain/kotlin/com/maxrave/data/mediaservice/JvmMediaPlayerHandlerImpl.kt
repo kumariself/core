@@ -104,7 +104,8 @@ class JvmMediaPlayerHandlerImpl(
     private val coroutineScope: CoroutineScope,
 ) : MediaPlayerHandler,
     MediaPlayerListener {
-    private val nypc = NPYC(getPlatform())
+    private val nypc =
+        if (getPlatform() is Platform.Linux) NPYC(getPlatform()) else null
 
     // macOS Media Integration (Now Playing Center + Remote Command Center)
     private val macOSMediaIntegration: MacOSMediaIntegration? by lazy {
@@ -293,7 +294,7 @@ class JvmMediaPlayerHandlerImpl(
         }
         player.volume = runBlocking { dataStoreManager.playerVolume.first() }
         mayBeRestoreQueue()
-        nypc.setListener(
+        nypc?.setListener(
             object : NowPlayingListener {
                 override fun onPlayPause() {
                     coroutineScope.launch {
@@ -483,7 +484,7 @@ class JvmMediaPlayerHandlerImpl(
                     val song =
                         songEntity ?: track?.toSongEntity() ?: mediaItem.toSongEntity()
                     updateDiscordRpc(song)
-                    nypc.setNowPlaying(
+                    nypc?.setNowPlaying(
                         song.title,
                         song.artistName?.joinToString(", ") ?: "",
                         song.albumName ?: "",
@@ -648,7 +649,7 @@ class JvmMediaPlayerHandlerImpl(
                 isPreviousAvailable = player.hasPreviousMediaItem(),
             )
         coroutineScope.launch {
-            nypc.setButtonEnabled(
+            nypc?.setButtonEnabled(
                 isPlaying = controlState.value.isPlaying,
                 canGoNext = controlState.value.isNextAvailable,
                 canGoPrevious = controlState.value.isPreviousAvailable,
@@ -2102,7 +2103,7 @@ class JvmMediaPlayerHandlerImpl(
 
     override fun release() {
         Logger.w("ServiceHandler", "Starting release process")
-        nypc.removeListener()
+        nypc?.removeListener()
         // Release macOS media integration
         clearMacOSNowPlayingInfo()
         macOSMediaIntegration?.release()

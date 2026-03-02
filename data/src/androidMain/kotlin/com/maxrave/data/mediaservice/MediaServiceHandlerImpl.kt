@@ -1953,7 +1953,13 @@ internal class MediaServiceHandlerImpl(
             return
         }
 
-        if (loudnessEnhancer == null && player.audioSessionId != PlayerConstants.AUDIO_SESSION_ID_UNSET) {
+        // Always recreate LoudnessEnhancer because CrossfadeExoPlayerAdapter creates new
+        // ExoPlayer instances per track, each with a different audio session ID.
+        // The old LoudnessEnhancer becomes attached to a released session and has no effect.
+        if (player.audioSessionId != PlayerConstants.AUDIO_SESSION_ID_UNSET) {
+            try {
+                loudnessEnhancer?.release()
+            } catch (_: Exception) {}
             try {
                 loudnessEnhancer = LoudnessEnhancer(player.audioSessionId)
             } catch (e: Exception) {
