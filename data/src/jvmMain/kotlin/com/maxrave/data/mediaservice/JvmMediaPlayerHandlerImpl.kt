@@ -925,20 +925,39 @@ class JvmMediaPlayerHandlerImpl(
         sleepTimerJob?.cancel()
         sleepTimerJob =
             coroutineScope.launch(Dispatchers.Main) {
-                _sleepTimerState.update {
-                    it.copy(isDone = false, timeRemaining = minutes)
-                }
-                var count = minutes
-                while (count > 0) {
-                    delay(60 * 1000L)
-                    count--
+                if (minutes == Int.MAX_VALUE) {
+                    // "End of current song" mode: use sentinel -1 to indicate this special state
                     _sleepTimerState.update {
-                        it.copy(isDone = false, timeRemaining = count)
+                        it.copy(isDone = false, timeRemaining = -1)
                     }
-                }
-                player.pause()
-                _sleepTimerState.update {
-                    it.copy(isDone = true, timeRemaining = 0)
+                    // Poll until player duration is available (may be -1 initially)
+                    var duration = player.duration
+                    while (duration <= 0L) {
+                        delay(500)
+                        duration = player.duration
+                    }
+                    val remaining = (duration - player.currentPosition).coerceAtLeast(0L)
+                    delay(remaining)
+                    player.pause()
+                    _sleepTimerState.update {
+                        it.copy(isDone = true, timeRemaining = 0)
+                    }
+                } else {
+                    _sleepTimerState.update {
+                        it.copy(isDone = false, timeRemaining = minutes)
+                    }
+                    var count = minutes
+                    while (count > 0) {
+                        delay(60 * 1000L)
+                        count--
+                        _sleepTimerState.update {
+                            it.copy(isDone = false, timeRemaining = count)
+                        }
+                    }
+                    player.pause()
+                    _sleepTimerState.update {
+                        it.copy(isDone = true, timeRemaining = 0)
+                    }
                 }
             }
     }
