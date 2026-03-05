@@ -401,6 +401,7 @@ internal class MediaServiceHandlerImpl(
                         _controlState.update { it.copy(isLiked = songEntity.liked) }
                         var thumbUrl =
                             track?.thumbnails?.lastOrNull()?.url
+                                ?: songEntity.thumbnails
                                 ?: "http://i.ytimg.com/vi/${songEntity.videoId}/maxresdefault.jpg"
                         if (thumbUrl.contains("w120")) {
                             thumbUrl = Regex("([wh])120").replace(thumbUrl, "$1544")
