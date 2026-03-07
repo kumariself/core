@@ -165,6 +165,22 @@ internal class DelegatingForwardingPlayer(
     }
 
     /**
+     * Clear video output from a specific player instance.
+     * Must be called on the OLD delegate before swapping, so the native surface
+     * is disconnected from the old MediaCodec before the new player tries to connect.
+     */
+    private fun clearVideoOutputFromPlayer(player: Player) {
+        if (currentVideoOutput != null) {
+            Logger.d(TAG, "Clearing video surface from old delegate before swap")
+            try {
+                player.clearVideoSurface()
+            } catch (e: Exception) {
+                Logger.w(TAG, "Error clearing video surface from old delegate: ${e.message}")
+            }
+        }
+    }
+
+    /**
      * Re-attach the tracked video output to the current delegate.
      * Called after [swapDelegate] to ensure video continues rendering on the new ExoPlayer.
      */
@@ -293,7 +309,13 @@ internal class DelegatingForwardingPlayer(
         // 1. Snapshot current listeners
         val listenersToReAdd = trackedListeners.toList()
 
-        // 2. Remove all listeners from old delegate (ForwardingPlayer removes ForwardingListener wrappers)
+        // 2. Clear video surface from OLD delegate BEFORE swapping.
+        //    The native surface can only be connected to one MediaCodec at a time.
+        //    If we don't clear it here, the new player's MediaCodec.setSurface() will fail
+        //    with "already connected" → IllegalArgumentException crash.
+        clearVideoOutputFromPlayer(wrappedPlayer)
+
+        // 3. Remove all listeners from old delegate (ForwardingPlayer removes ForwardingListener wrappers)
         listenersToReAdd.forEach { listener ->
             try {
                 super.removeListener(listener)
@@ -302,15 +324,15 @@ internal class DelegatingForwardingPlayer(
             }
         }
 
-        // 3. Swap the private final `player` field
+        // 4. Swap the private final `player` field
         field.set(this, newDelegate)
 
-        // 4. Re-add all listeners (ForwardingPlayer creates new ForwardingListener wrappers for new delegate)
+        // 5. Re-add all listeners (ForwardingPlayer creates new ForwardingListener wrappers for new delegate)
         listenersToReAdd.forEach { listener ->
             super.addListener(listener)
         }
 
-        // 5. Re-attach video surface to the new delegate
+        // 6. Re-attach video surface to the new delegate
         //    Without this, video stops rendering because the new ExoPlayer
         //    never received setVideoSurfaceView/setVideoSurface/etc.
         reAttachVideoOutput()

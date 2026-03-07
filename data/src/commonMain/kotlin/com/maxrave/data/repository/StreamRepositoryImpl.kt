@@ -192,7 +192,7 @@ internal class StreamRepositoryImpl(
                     var tidalBpm: Int? = null
                     var tidalMusicKey: String? = null
                     var tidalKeyScale: String? = null
-                    if (prefer320kbps && !isVideo && durationSecond != null) {
+                    if (prefer320kbps && !isVideo && durationSecond != null && data.third == MediaType.Song) {
                         val your320kbpsUrl = dataStoreManager.your320kbpsUrl.first()
                         Logger.d("Stream", "Prefer 320kbps enabled ${response.videoDetails}")
                         val title = response.videoDetails?.title ?: ""
@@ -224,7 +224,12 @@ internal class StreamRepositoryImpl(
                         tidalBpm = tidalResult?.bpm
                         tidalMusicKey = tidalResult?.musicKey
                         tidalKeyScale = tidalResult?.keyScale
-                        val audioData = tidalResult?.stream?.data?.manifest?.decodeTidalManifest()
+                        val audioData =
+                            tidalResult
+                                ?.stream
+                                ?.data
+                                ?.manifest
+                                ?.decodeTidalManifest()
                         if (audioData != null) {
                             Logger.d("Stream", "Found potential 320kbps stream from Tidal: $tidalResult")
                             format =
@@ -245,7 +250,10 @@ internal class StreamRepositoryImpl(
                             format =
                                 format?.copy(
                                     itag = 0,
-                                    url = tidalResult.stream.data?.manifest?.decodeBase64(),
+                                    url =
+                                        tidalResult.stream.data
+                                            ?.manifest
+                                            ?.decodeBase64(),
                                     bitrate = 320000,
                                 )
                         }
@@ -423,4 +431,15 @@ internal class StreamRepositoryImpl(
         }.flowOn(Dispatchers.IO)
 
     override fun is403Url(url: String) = flow { emit(youTube.is403Url(url)) }.flowOn(Dispatchers.IO)
+
+    override suspend fun invalidateFormat(videoId: String) {
+        withContext(Dispatchers.IO) {
+            localDataSource.getNewFormat(videoId)?.let { format ->
+                Logger.d("Stream", "Invalidating cached format for $videoId")
+                localDataSource.updateNewFormat(
+                    format.copy(expiredTime = now().plusSeconds(-1)),
+                )
+            }
+        }
+    }
 }

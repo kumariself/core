@@ -259,6 +259,7 @@ private fun provideResolvingDataSourceFactory(
             return@Factory dataSpec
         }
         var dataSpecReturn: DataSpec = dataSpec
+        var resolved = false
         runBlocking(Dispatchers.IO) {
             if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
                 val id = mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
@@ -271,6 +272,7 @@ private fun provideResolvingDataSourceFactory(
                         Logger.d("Stream", "is 403 $is403Url")
                         if (!is403Url) {
                             dataSpecReturn = dataSpec.withUri(videoUrl.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
+                            resolved = true
                             return@runBlocking
                         }
                     }
@@ -286,6 +288,7 @@ private fun provideResolvingDataSourceFactory(
                         Logger.d("Stream", it)
                         Logger.w("Stream", "Video")
                         dataSpecReturn = dataSpec.withUri(it.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
+                        resolved = true
                     }
             } else {
                 streamRepository.getNewFormat(mediaId).lastOrNull()?.let {
@@ -297,6 +300,7 @@ private fun provideResolvingDataSourceFactory(
                         Logger.d("Stream", "is 403 $is403Url")
                         if (!is403Url) {
                             dataSpecReturn = dataSpec.withUri(audioUrl.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
+                            resolved = true
                             return@runBlocking
                         }
                     }
@@ -312,8 +316,13 @@ private fun provideResolvingDataSourceFactory(
                         Logger.d("Stream", it)
                         Logger.w("Stream", "Audio")
                         dataSpecReturn = dataSpec.withUri(it.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
+                        resolved = true
                     }
             }
+        }
+        if (!resolved) {
+            Logger.e("Stream", "Failed to resolve stream URL for $mediaId")
+            throw java.io.IOException("Failed to resolve stream URL for $mediaId")
         }
         return@Factory dataSpecReturn
     }

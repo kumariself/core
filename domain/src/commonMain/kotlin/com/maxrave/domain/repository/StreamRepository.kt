@@ -50,4 +50,6 @@ interface StreamRepository {
     fun getFullMetadata(videoId: String): Flow<Resource<Track>>
 
     fun is403Url(url: String): Flow<Boolean>
+
+    suspend fun invalidateFormat(videoId: String)
 }

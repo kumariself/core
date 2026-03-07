@@ -424,11 +424,10 @@ fun MediaPlayerViewWithSubtitle(
                 PlayerSurface(
                     player = player,
                     surfaceType = SURFACE_TYPE_SURFACE_VIEW,
-                    modifier =
-                        Modifier
-                            .wrapContentSize()
-                            .aspectRatio(if (videoRatio > 0f) videoRatio else 16f / 9)
-                            .align(Alignment.Center),
+                    modifier = Modifier
+                        .wrapContentSize()
+                        .aspectRatio(if (videoRatio > 0f) videoRatio else 16f / 9)
+                        .align(Alignment.Center),
                 )
 
                 if (presentationState.coverSurface) {

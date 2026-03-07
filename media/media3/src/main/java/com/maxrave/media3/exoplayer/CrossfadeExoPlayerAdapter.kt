@@ -203,6 +203,12 @@ internal class CrossfadeExoPlayerAdapter(
     @Volatile
     private var crossfadeFromIndex = -1
 
+    // ========== Retry on Source Error ==========
+    // Track retry attempts per media item to avoid infinite retry loops
+    private var retryCount = 0
+    private var retryVideoId: String? = null
+    private val maxRetryCount = 2
+
     // ========== AutoMix Metadata Cache ==========
     // videoId -> audio analysis data from Tidal (populated externally when 320kbps stream is fetched)
     private val audioMetaCache = ConcurrentHashMap<String, SongAudioMeta>()
@@ -1021,6 +1027,22 @@ internal class CrossfadeExoPlayerAdapter(
     /**
      * State transition helper - mirrors GstreamerPlayerAdapter.transitionToState()
      */
+    private fun propagatePlayerError(error: PlaybackException) {
+        val genericError =
+            PlayerError(
+                errorCode =
+                    when (error.errorCode) {
+                        PlaybackException.ERROR_CODE_TIMEOUT -> PlayerConstants.ERROR_CODE_TIMEOUT
+                        else -> error.errorCode
+                    },
+                errorCodeName = error.errorCodeName,
+                message = error.message,
+            )
+        Logger.e(TAG, "Playback error: ${error.message}")
+        listeners.forEach { it.onPlayerError(genericError) }
+        transitionToState(InternalState.ERROR)
+    }
+
     private fun transitionToState(newState: InternalState) {
         if (internalState == newState) {
             Logger.d(TAG, "State transition ignored: already in $newState")
@@ -1256,6 +1278,9 @@ internal class CrossfadeExoPlayerAdapter(
                             // Duration should be available now
                             val dur = player.duration
                             if (dur > 0) cachedDuration = dur
+                            // Reset retry counter on successful playback
+                            retryCount = 0
+                            retryVideoId = null
                         }
 
                         Player.STATE_BUFFERING -> {
@@ -1286,22 +1311,48 @@ internal class CrossfadeExoPlayerAdapter(
 
                 override fun onPlayerError(error: PlaybackException) {
                     if (player != currentPlayer) {
-                        Logger.d(TAG, "Ignoring onPlaybackStateChanged from non-current player")
+                        Logger.d(TAG, "Ignoring onPlayerError from non-current player")
                         return
                     }
-                    val genericError =
-                        PlayerError(
-                            errorCode =
-                                when (error.errorCode) {
-                                    PlaybackException.ERROR_CODE_TIMEOUT -> PlayerConstants.ERROR_CODE_TIMEOUT
-                                    else -> error.errorCode
-                                },
-                            errorCodeName = error.errorCodeName,
-                            message = error.message,
-                        )
-                    Logger.e(TAG, "Playback error: ${error.message}")
-                    listeners.forEach { it.onPlayerError(genericError) }
-                    transitionToState(InternalState.ERROR)
+
+                    // Retry for source errors (expired/invalid stream URL)
+                    // ERROR_CODE_PARSING_CONTAINER_MALFORMED (3001) = server returned non-media response (e.g. HTML error page)
+                    // ERROR_CODE_IO_BAD_HTTP_STATUS (2004) = HTTP 403/410 from expired URL
+                    // ERROR_CODE_IO_NETWORK_CONNECTION_FAILED (2001) = connection refused
+                    val isRetryableSourceError = error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
+                        error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+
+                    val currentVideoId = playlist.getOrNull(localCurrentMediaItemIndex)?.mediaId
+                    if (isRetryableSourceError && currentVideoId != null) {
+                        // Reset retry count if this is a different track
+                        if (retryVideoId != currentVideoId) {
+                            retryVideoId = currentVideoId
+                            retryCount = 0
+                        }
+                        if (retryCount < maxRetryCount) {
+                            retryCount++
+                            Logger.w(TAG, "Retryable source error (attempt $retryCount/$maxRetryCount) for $currentVideoId: ${error.errorCodeName}")
+                            coroutineScope.launch {
+                                try {
+                                    // Invalidate cached format so ResolvingDataSource fetches a fresh URL
+                                    streamRepository.invalidateFormat(currentVideoId)
+                                    streamRepository.invalidateFormat("${com.maxrave.common.MERGING_DATA_TYPE.VIDEO}$currentVideoId")
+                                    // Evict from precache (it may hold a stale player)
+                                    precachedPlayers.remove(currentVideoId)?.player?.release()
+                                    // Reload the track
+                                    loadAndPlayTrackInternal(localCurrentMediaItemIndex, 0L, shouldPlay = true)
+                                } catch (e: Exception) {
+                                    if (e is CancellationException) throw e
+                                    Logger.e(TAG, "Retry failed: ${e.message}", e)
+                                    propagatePlayerError(error)
+                                }
+                            }
+                            return
+                        }
+                        Logger.e(TAG, "Max retries ($maxRetryCount) exhausted for $currentVideoId")
+                    }
+
+                    propagatePlayerError(error)
                 }
 
                 override fun onIsLoadingChanged(isLoading: Boolean) {
