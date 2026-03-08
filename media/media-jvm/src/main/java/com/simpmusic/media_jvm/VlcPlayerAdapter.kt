@@ -82,20 +82,28 @@ class VlcPlayerAdapter(
     private val mediaPlayerFactory: MediaPlayerFactory
 
     init {
-        // Discover VLC native libraries - try NativeDiscovery first, then bundled libs
+        // Set up bundled VLC search paths BEFORE any vlcj class triggers LibVlc.<clinit>
+        val bundledVlcPath = findBundledVlcPath()
+        if (bundledVlcPath != null) {
+            // vlcj uses "libvlc" / "libvlccore" on Windows, "vlc" / "vlccore" on Linux/Mac
+            val isWindows = System.getProperty("os.name", "").lowercase().contains("win")
+            val libVlcName = if (isWindows) "libvlc" else "vlc"
+            val libVlcCoreName = if (isWindows) "libvlccore" else "vlccore"
+            com.sun.jna.NativeLibrary.addSearchPath(libVlcName, bundledVlcPath)
+            com.sun.jna.NativeLibrary.addSearchPath(libVlcCoreName, bundledVlcPath)
+            // Also set jna.library.path as fallback for JNA native loading
+            val existingPath = System.getProperty("jna.library.path", "")
+            val newPath = if (existingPath.isEmpty()) bundledVlcPath else "$existingPath${File.pathSeparator}$bundledVlcPath"
+            System.setProperty("jna.library.path", newPath)
+            Logger.i(TAG, "Bundled VLC search path set: $bundledVlcPath (lib=$libVlcName)")
+        }
+
+        // Try NativeDiscovery (finds system-installed VLC)
         val found = NativeDiscovery().discover()
-        if (!found) {
-            Logger.w(TAG, "NativeDiscovery failed, trying bundled VLC libraries...")
-            val bundledVlcPath = findBundledVlcPath()
-            if (bundledVlcPath != null) {
-                com.sun.jna.NativeLibrary
-                    .addSearchPath("vlc", bundledVlcPath)
-                com.sun.jna.NativeLibrary
-                    .addSearchPath("vlccore", bundledVlcPath)
-                Logger.i(TAG, "Using bundled VLC from: $bundledVlcPath")
-            } else {
-                Logger.e(TAG, "VLC native libraries not found! Please install VLC media player.")
-            }
+        if (!found && bundledVlcPath == null) {
+            Logger.e(TAG, "VLC native libraries not found! Please install VLC media player.")
+        } else if (!found) {
+            Logger.i(TAG, "Using bundled VLC from: $bundledVlcPath")
         }
 
         val factoryArgs =
