@@ -387,6 +387,8 @@ class VlcPlayerAdapter(
             localCurrentMediaItemIndex = mediaItemIndex
             currentPlayer?.release()
             currentPlayer = null
+            currentPlayerIsVideo = false
+            _currentVideoSurface.value = null
             loadAndPlayTrackInternal(mediaItemIndex, positionMs, shouldPlay)
         }
     }
@@ -844,7 +846,9 @@ class VlcPlayerAdapter(
     override var repeatMode: Int
         get() = internalRepeatMode
         set(value) {
+            if (internalRepeatMode == value) return
             internalRepeatMode = value
+            notifyListeners { onRepeatModeChanged(value) }
         }
 
     override var playWhenReady: Boolean

@@ -272,25 +272,24 @@ class JvmMediaPlayerHandlerImpl(
             val repeatKey = runBlocking { dataStoreManager.repeatKey.first() }
             Logger.d(TAG, "Shuffle: $shuffleKey")
             Logger.d(TAG, "Repeat: $repeatKey")
-            player.shuffleModeEnabled = shuffleKey == TRUE
-            player.repeatMode =
+            val restoredShuffle = shuffleKey == TRUE
+            val restoredRepeatMode =
                 when (repeatKey) {
-                    DataStoreManager.REPEAT_ONE -> {
-                        PlayerConstants.REPEAT_MODE_ONE
-                    }
-
-                    DataStoreManager.REPEAT_ALL -> {
-                        PlayerConstants.REPEAT_MODE_ALL
-                    }
-
-                    DataStoreManager.REPEAT_MODE_OFF -> {
-                        PlayerConstants.REPEAT_MODE_OFF
-                    }
-
-                    else -> {
-                        PlayerConstants.REPEAT_MODE_OFF
-                    }
+                    DataStoreManager.REPEAT_ONE -> PlayerConstants.REPEAT_MODE_ONE
+                    DataStoreManager.REPEAT_ALL -> PlayerConstants.REPEAT_MODE_ALL
+                    else -> PlayerConstants.REPEAT_MODE_OFF
                 }
+            player.shuffleModeEnabled = restoredShuffle
+            player.repeatMode = restoredRepeatMode
+            // Ensure controlState is in sync after restore, regardless of listener callbacks
+            _controlState.value = _controlState.value.copy(
+                isShuffle = restoredShuffle,
+                repeatState = when (restoredRepeatMode) {
+                    PlayerConstants.REPEAT_MODE_ONE -> RepeatState.One
+                    PlayerConstants.REPEAT_MODE_ALL -> RepeatState.All
+                    else -> RepeatState.None
+                },
+            )
         }
         player.volume = runBlocking { dataStoreManager.playerVolume.first() }
         mayBeRestoreQueue()
@@ -2111,8 +2110,10 @@ class JvmMediaPlayerHandlerImpl(
                         )
                     if (index == null || index == -1) index = 0
                     addMediaItem(currentPlayingTrack.toGenericMediaItem(), playWhenReady = false)
-                    player.seekTo(dataStoreManager.recentPosition.first().toLong())
                     loadPlaylistOrAlbum(index = index)
+                    loadJob?.join()
+                    val savedPosition = dataStoreManager.recentPosition.first().toLong()
+                    player.seekTo(index, savedPosition)
                 }
             }
         }

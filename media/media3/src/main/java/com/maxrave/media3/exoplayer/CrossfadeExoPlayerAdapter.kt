@@ -946,7 +946,9 @@ internal class CrossfadeExoPlayerAdapter(
     override var repeatMode: Int
         get() = internalRepeatMode
         set(value) {
+            if (internalRepeatMode == value) return
             internalRepeatMode = value
+            listeners.forEach { it.onRepeatModeChanged(value) }
         }
 
     override var playWhenReady: Boolean

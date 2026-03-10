@@ -8,15 +8,12 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.wrapContentHeight
-import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -43,7 +40,6 @@ import coil3.request.crossfade
 import com.maxrave.domain.data.model.metadata.Lyrics
 import com.maxrave.domain.data.model.streams.TimeLine
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
-import com.maxrave.logger.Logger
 import com.simpmusic.media_jvm.VlcPlayerAdapter
 import com.simpmusic.media_jvm.VlcVideoSurfacePanel
 import kotlinx.coroutines.Dispatchers
@@ -53,9 +49,7 @@ import org.koin.compose.koinInject
 import uk.co.caprica.vlcj.factory.MediaPlayerFactory
 import uk.co.caprica.vlcj.player.base.MediaPlayer
 import uk.co.caprica.vlcj.player.base.MediaPlayerEventAdapter
-import java.awt.Component
 import java.awt.Dimension
-import javax.swing.BoxLayout
 import javax.swing.JPanel
 
 @Composable
@@ -146,16 +140,11 @@ fun MediaPlayerViewWithSubtitleJvm(
     val state by mediaPlayerHandler.nowPlayingState.collectAsState()
     val videoCanvas by player.currentVideoSurface.collectAsState()
 
-    val scope = rememberCoroutineScope()
     var sizePx by remember { mutableStateOf(0 to 0) }
 
-    val showArtwork by derivedStateOf {
-        videoCanvas == null
-    }
+    val showArtwork = videoCanvas == null
 
-    val artworkUri by derivedStateOf {
-        state.songEntity?.thumbnails
-    }
+    val artworkUri = state.songEntity?.thumbnails
 
     var currentLineIndex by rememberSaveable { mutableIntStateOf(-1) }
     var currentTranslatedLineIndex by rememberSaveable { mutableIntStateOf(-1) }
@@ -210,47 +199,42 @@ fun MediaPlayerViewWithSubtitleJvm(
             },
         contentAlignment = Alignment.Center,
     ) {
-        Crossfade(showArtwork) {
-            if (it) {
-                AsyncImage(
-                    model = ImageRequest
-                        .Builder(LocalPlatformContext.current)
-                        .data(artworkUri)
-                        .diskCachePolicy(CachePolicy.ENABLED)
-                        .diskCacheKey(artworkUri)
-                        .crossfade(550)
-                        .build(),
-                    contentDescription = null,
-                    contentScale = ContentScale.FillHeight,
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .align(Alignment.Center),
-                )
-            } else {
-                Box(
-                    Modifier
-                        .graphicsLayer { clip = true }
-                        .fillMaxSize()
-                        .align(Alignment.Center),
-                ) {
-                    val canvas = videoCanvas
-                    if (canvas != null && sizePx.first > 0 && sizePx.second > 0) {
-                        key(canvas) {
-                            SwingPanel(
-                                factory = {
-                                    JPanel(java.awt.BorderLayout()).apply {
-                                        background = java.awt.Color.BLACK
-                                        isOpaque = true
-                                        preferredSize = Dimension(sizePx.first, sizePx.second)
-                                        add(canvas, java.awt.BorderLayout.CENTER)
-                                    }
-                                },
-                                modifier = Modifier
-                                    .fillMaxSize(),
-                                background = Color.Black,
-                            )
-                        }
-                    }
+        // SwingPanel (native Swing component) does not support Compose animation layers
+        // (alpha, z-ordering). Using Crossfade here causes the old and new SwingPanel to
+        // coexist during the animation, leading to the video not visually switching.
+        // Use a simple conditional instead so the old panel is removed immediately.
+        if (showArtwork) {
+            AsyncImage(
+                model = ImageRequest
+                    .Builder(LocalPlatformContext.current)
+                    .data(artworkUri)
+                    .diskCachePolicy(CachePolicy.ENABLED)
+                    .diskCacheKey(artworkUri)
+                    .crossfade(550)
+                    .build(),
+                contentDescription = null,
+                contentScale = ContentScale.FillHeight,
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .align(Alignment.Center),
+            )
+        } else {
+            val canvas = videoCanvas
+            if (canvas != null && sizePx.first > 0 && sizePx.second > 0) {
+                key(canvas) {
+                    SwingPanel(
+                        factory = {
+                            JPanel(java.awt.BorderLayout()).apply {
+                                background = java.awt.Color.BLACK
+                                isOpaque = true
+                                preferredSize = Dimension(sizePx.first, sizePx.second)
+                                add(canvas, java.awt.BorderLayout.CENTER)
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxSize(),
+                        background = Color.Black,
+                    )
                 }
             }
         }
@@ -278,11 +262,11 @@ fun MediaPlayerViewWithSubtitleJvm(
                             ) {
                                 Text(
                                     text = lines.getOrNull(currentLineIndex)?.words ?: return@Crossfade,
-                                    style = mainTextStyle.let {
+                                    style = mainTextStyle.let { style ->
                                         if (shouldScaleDownSubtitle) {
-                                            it.copy(fontSize = it.fontSize * 0.8f)
+                                            style.copy(fontSize = style.fontSize * 0.8f)
                                         } else {
-                                            it
+                                            style
                                         }
                                     },
                                     color = Color.White,
@@ -297,11 +281,11 @@ fun MediaPlayerViewWithSubtitleJvm(
                                     if (translate) {
                                         Text(
                                             text = translateLines.getOrNull(currentTranslatedLineIndex)?.words ?: return@Crossfade,
-                                            style = translatedTextStyle.let {
+                                            style = translatedTextStyle.let { style ->
                                                 if (shouldScaleDownSubtitle) {
-                                                    it.copy(fontSize = it.fontSize * 0.8f)
+                                                    style.copy(fontSize = style.fontSize * 0.8f)
                                                 } else {
-                                                    it
+                                                    style
                                                 }
                                             },
                                             color = Color.Yellow,
