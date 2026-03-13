@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.lastOrNull
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -292,27 +294,10 @@ class VlcPlayerAdapter(
     override fun pause() {
         Logger.d(TAG, "pause() called (current state: $internalState)")
         coroutineScope.launch {
-            // Cancel any ongoing crossfade
+            // Cancel any ongoing crossfade and await completion before proceeding
             if (isCrossfading) {
                 Logger.d(TAG, "Pause: Cancelling crossfade")
-                crossfadeJob?.cancel()
-                crossfadeJob = null
-                // Revert index: we're staying on the track currentPlayer was playing
-                if (crossfadeFromIndex >= 0) {
-                    localCurrentMediaItemIndex = crossfadeFromIndex
-                    playlist.getOrNull(crossfadeFromIndex)?.let { mediaItem ->
-                        notifyListeners {
-                            onMediaItemTransition(
-                                mediaItem,
-                                PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_SEEK,
-                            )
-                        }
-                    }
-                    crossfadeFromIndex = -1
-                }
-                secondaryPlayer?.release()
-                secondaryPlayer = null
-                setCrossfading(false)
+                cancelCrossfadeAndCleanup(revertIndex = true)
             }
 
             when (internalState) {
@@ -370,15 +355,10 @@ class VlcPlayerAdapter(
         coroutineScope.launch {
             val shouldPlay = internalPlayWhenReady
 
-            // Cancel any ongoing crossfade
+            // Cancel any ongoing crossfade and await completion
             if (isCrossfading) {
                 Logger.d(TAG, "seekTo: Cancelling crossfade")
-                crossfadeJob?.cancel()
-                crossfadeJob = null
-                secondaryPlayer?.release()
-                secondaryPlayer = null
-                crossfadeFromIndex = -1
-                setCrossfading(false)
+                cancelCrossfadeAndCleanup(revertIndex = false)
             }
 
             // Cancel any ongoing load
@@ -409,16 +389,12 @@ class VlcPlayerAdapter(
             // localCurrentMediaItemIndex was already updated to A+1 in triggerCrossfadeTransition,
             // so getNextMediaItemIndex() would return A+2. We must seek to localCurrentMediaItemIndex instead.
             if (isCrossfading) {
-                Logger.d(TAG, "seekToNext: Cancelling crossfade, seeking to track we're fading in (index $localCurrentMediaItemIndex)")
+                val targetIndex = localCurrentMediaItemIndex
+                Logger.d(TAG, "seekToNext: Cancelling crossfade, seeking to track we're fading in (index $targetIndex)")
                 coroutineScope.launch {
-                    crossfadeJob?.cancel()
-                    crossfadeJob = null
-                    secondaryPlayer?.release()
-                    secondaryPlayer = null
-                    crossfadeFromIndex = -1
-                    setCrossfading(false)
+                    cancelCrossfadeAndCleanup(revertIndex = false)
+                    seekTo(targetIndex, 0)
                 }
-                seekTo(localCurrentMediaItemIndex, 0)
                 return
             }
 
@@ -428,54 +404,38 @@ class VlcPlayerAdapter(
     }
 
     override fun seekToPrevious() {
-        // Cancel any ongoing crossfade first and revert index
-        if (isCrossfading) {
-            Logger.d(TAG, "seekToPrevious: Cancelling crossfade")
-            coroutineScope.launch {
-                crossfadeJob?.cancel()
-                crossfadeJob = null
-                secondaryPlayer?.release()
-                secondaryPlayer = null
-                if (crossfadeFromIndex >= 0) {
-                    localCurrentMediaItemIndex = crossfadeFromIndex
-                    playlist.getOrNull(crossfadeFromIndex)?.let { mediaItem ->
-                        notifyListeners {
-                            onMediaItemTransition(
-                                mediaItem,
-                                PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_SEEK,
-                            )
-                        }
-                    }
-                    crossfadeFromIndex = -1
-                }
-                setCrossfading(false)
+        coroutineScope.launch {
+            // Cancel any ongoing crossfade first and revert index, awaiting completion
+            if (isCrossfading) {
+                Logger.d(TAG, "seekToPrevious: Cancelling crossfade")
+                cancelCrossfadeAndCleanup(revertIndex = true)
             }
-        }
 
-        if (crossfadeEnabled) {
-            // Standard music player behavior:
-            // Position > 3s → seek to start of current track
-            // Position <= 3s → go to previous track
-            val positionThresholdMs = 3000L
-            if (cachedPosition > positionThresholdMs) {
-                Logger.d(TAG, "seekToPrevious: pos=${cachedPosition}ms > ${positionThresholdMs}ms — seeking to start")
-                currentPlayer?.seekTo(0)
-                cachedPosition = 0
-            } else if (hasPreviousMediaItem()) {
-                Logger.d(TAG, "seekToPrevious: pos=${cachedPosition}ms <= ${positionThresholdMs}ms — going to previous track")
+            if (crossfadeEnabled) {
+                // Standard music player behavior:
+                // Position > 3s → seek to start of current track
+                // Position <= 3s → go to previous track
+                val positionThresholdMs = 3000L
+                if (cachedPosition > positionThresholdMs) {
+                    Logger.d(TAG, "seekToPrevious: pos=${cachedPosition}ms > ${positionThresholdMs}ms — seeking to start")
+                    currentPlayer?.seekTo(0)
+                    cachedPosition = 0
+                } else if (hasPreviousMediaItem()) {
+                    Logger.d(TAG, "seekToPrevious: pos=${cachedPosition}ms <= ${positionThresholdMs}ms — going to previous track")
+                    val prevIndex = getPreviousMediaItemIndex()
+                    seekTo(prevIndex, 0)
+                } else {
+                    Logger.d(TAG, "seekToPrevious: No previous item, seeking to start")
+                    currentPlayer?.seekTo(0)
+                    cachedPosition = 0
+                }
+                return@launch
+            }
+
+            if (hasPreviousMediaItem()) {
                 val prevIndex = getPreviousMediaItemIndex()
                 seekTo(prevIndex, 0)
-            } else {
-                Logger.d(TAG, "seekToPrevious: No previous item, seeking to start")
-                currentPlayer?.seekTo(0)
-                cachedPosition = 0
             }
-            return
-        }
-
-        if (hasPreviousMediaItem()) {
-            val prevIndex = getPreviousMediaItemIndex()
-            seekTo(prevIndex, 0)
         }
     }
 
@@ -1377,10 +1337,17 @@ class VlcPlayerAdapter(
      * Handle track end
      */
     private fun handleTrackEndInternal() {
+        // If crossfade is already in progress (triggered by position update before track ended),
+        // don't interrupt it. The old player ending is expected — the crossfade will complete
+        // and finalizeCrossfade() will handle the transition.
+        if (isCrossfading) {
+            Logger.d(TAG, "handleTrackEndInternal: crossfade in progress, ignoring track end")
+            return
+        }
+
         val shouldCrossfade =
             crossfadeEnabled &&
-                hasNextMediaItem() &&
-                !isCrossfading
+                hasNextMediaItem()
 
         if (shouldCrossfade) {
             val nextIndex = getNextMediaItemIndex()
@@ -1414,7 +1381,7 @@ class VlcPlayerAdapter(
     private fun triggerCrossfadeTransition(nextIndex: Int) {
         if (nextIndex !in playlist.indices || isCrossfading) return
 
-        coroutineScope.launch {
+        crossfadeJob = coroutineScope.launch {
             try {
                 setCrossfading(true)
                 val nextMediaItem = playlist[nextIndex]
@@ -1523,6 +1490,38 @@ class VlcPlayerAdapter(
     }
 
     /**
+     * Cancel the ongoing crossfade, await its completion, and clean up state.
+     * Uses [Job.cancelAndJoin] to ensure the crossfade coroutine's catch block
+     * has finished before the caller proceeds, preventing race conditions.
+     *
+     * @param revertIndex If true, revert [localCurrentMediaItemIndex] to the track
+     *   that was playing before the crossfade started.
+     */
+    private suspend fun cancelCrossfadeAndCleanup(revertIndex: Boolean) {
+        val job = crossfadeJob
+        crossfadeJob = null
+        job?.cancel()
+        job?.join()
+        // secondaryPlayer may already be released by performCrossfade's catch block,
+        // but with isReleased guard in VlcPlayer, this is safe.
+        secondaryPlayer?.release()
+        secondaryPlayer = null
+        if (revertIndex && crossfadeFromIndex >= 0) {
+            localCurrentMediaItemIndex = crossfadeFromIndex
+            playlist.getOrNull(crossfadeFromIndex)?.let { mediaItem ->
+                notifyListeners {
+                    onMediaItemTransition(
+                        mediaItem,
+                        PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_SEEK,
+                    )
+                }
+            }
+        }
+        crossfadeFromIndex = -1
+        setCrossfading(false)
+    }
+
+    /**
      * Perform the actual crossfade animation
      *
      * @param effectiveDurationMs The actual crossfade duration to use. May be shorter than
@@ -1542,37 +1541,34 @@ class VlcPlayerAdapter(
             "Crossfade animation: ${effectiveDurationMs}ms, $steps steps, ${delayPerStep}ms/step, internalVolume=$internalVolume, targetVolume=$targetVolume",
         )
 
-        crossfadeJob?.cancel()
-        crossfadeJob =
-            coroutineScope.launch {
-                try {
-                    for (step in 0..steps) {
-                        if (!isActive) break
+        try {
+            for (step in 0..steps) {
+                currentCoroutineContext().ensureActive()
 
-                        val progress = step.toFloat() / steps
-                        val angle = progress * Math.PI / 2.0
+                val progress = step.toFloat() / steps
+                val angle = progress * Math.PI / 2.0
 
-                        // Equal-power crossfade using sine curve
-                        // Fade out: cos curve holds volume longer, then drops naturally
-                        val fadeOutVolume = (targetVolume * kotlin.math.cos(angle)).toInt()
-                        currentPlayer?.setVolume(fadeOutVolume)
+                // Equal-power crossfade using sine curve
+                // Fade out: cos curve holds volume longer, then drops naturally
+                val fadeOutVolume = (targetVolume * kotlin.math.cos(angle)).toInt()
+                currentPlayer?.setVolume(fadeOutVolume)
 
-                        // Fade in: sin curve brings next track in earlier
-                        val fadeInVolume = (targetVolume * kotlin.math.sin(angle)).toInt()
-                        nextPlayer.setVolume(fadeInVolume)
+                // Fade in: sin curve brings next track in earlier
+                val fadeInVolume = (targetVolume * kotlin.math.sin(angle)).toInt()
+                nextPlayer.setVolume(fadeInVolume)
 
-                        delay(delayPerStep.toLong())
-                    }
-
-                    // Transition complete
-                    finalizeCrossfade(nextIndex, nextPlayer)
-                } catch (e: CancellationException) {
-                    Logger.d(TAG, "Crossfade cancelled")
-                    nextPlayer.release()
-                    secondaryPlayer = null
-                    setCrossfading(false)
-                }
+                delay(delayPerStep.toLong())
             }
+
+            // Transition complete
+            finalizeCrossfade(nextIndex, nextPlayer)
+        } catch (e: CancellationException) {
+            Logger.d(TAG, "Crossfade cancelled")
+            // Release is safe even if caller also releases (isReleased guard prevents double-release)
+            nextPlayer.release()
+            secondaryPlayer = null
+            setCrossfading(false)
+        }
     }
 
     /**
@@ -1990,6 +1986,10 @@ class VlcPlayer(
         private const val TAG = "VlcPlayer"
     }
 
+    @Volatile
+    var isReleased = false
+        private set
+
     private var eventListener: MediaPlayerEventAdapter? = null
 
     fun setEventListener(listener: MediaPlayerEventAdapter?) {
@@ -2009,6 +2009,7 @@ class VlcPlayer(
     }
 
     fun play() {
+        if (isReleased) return
         try {
             mediaPlayer.controls().play()
         } catch (e: Exception) {
@@ -2017,6 +2018,7 @@ class VlcPlayer(
     }
 
     fun pause() {
+        if (isReleased) return
         try {
             mediaPlayer.controls().setPause(true)
         } catch (e: Exception) {
@@ -2025,6 +2027,7 @@ class VlcPlayer(
     }
 
     fun stop() {
+        if (isReleased) return
         try {
             mediaPlayer.controls().stop()
         } catch (e: Exception) {
@@ -2037,6 +2040,7 @@ class VlcPlayer(
      * We use 0-100 mapping from our 0.0-1.0 interface range.
      */
     fun setVolume(volume: Int) {
+        if (isReleased) return
         try {
             mediaPlayer.audio().setVolume(volume)
         } catch (e: Exception) {
@@ -2045,6 +2049,7 @@ class VlcPlayer(
     }
 
     fun seekTo(timeMs: Long) {
+        if (isReleased) return
         try {
             mediaPlayer.controls().setTime(timeMs)
         } catch (e: Exception) {
@@ -2054,7 +2059,8 @@ class VlcPlayer(
 
     val time: Long
         get() =
-            try {
+            if (isReleased) 0L
+            else try {
                 mediaPlayer.status().time()
             } catch (_: Exception) {
                 0L
@@ -2062,13 +2068,16 @@ class VlcPlayer(
 
     val length: Long
         get() =
-            try {
+            if (isReleased) 0L
+            else try {
                 mediaPlayer.status().length()
             } catch (_: Exception) {
                 0L
             }
 
     fun release() {
+        if (isReleased) return
+        isReleased = true
         try {
             setEventListener(null)
             // Run stop+release on a separate thread to avoid deadlock
