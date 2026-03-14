@@ -122,6 +122,7 @@ fun MediaPlayerViewWithUrl(
     }
 }
 
+private val RICH_SYNC_TIMESTAMP_REGEX = Regex("""<\d{2}:\d{2}\.\d{2,3}>\s*""")
 @Composable
 fun MediaPlayerViewWithSubtitleJvm(
     modifier: Modifier,
@@ -261,7 +262,7 @@ fun MediaPlayerViewWithSubtitleJvm(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
                                 Text(
-                                    text = lines.getOrNull(currentLineIndex)?.words ?: return@Crossfade,
+                                    text = lines.getOrNull(currentLineIndex)?.words?.replace(RICH_SYNC_TIMESTAMP_REGEX, "")?.trim() ?: return@Crossfade,,
                                     style = mainTextStyle.let { style ->
                                         if (shouldScaleDownSubtitle) {
                                             style.copy(fontSize = style.fontSize * 0.8f)

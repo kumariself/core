@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
 import androidx.annotation.OptIn
+import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -245,7 +246,8 @@ private fun provideResolvingDataSourceFactory(
             Logger.w("Stream", "Downloaded $mediaId")
             return@Factory dataSpec
         }
-        if (playerCache.isCached(mediaId, dataSpec.position, chunkLength)) {
+        val playerCached = playerCache.isCached(mediaId, dataSpec.position, chunkLength)
+        if (playerCached) {
             coroutineScope.launch(Dispatchers.IO) {
                 streamRepository.updateFormat(
                     if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
@@ -256,7 +258,9 @@ private fun provideResolvingDataSourceFactory(
                 )
             }
             Logger.w("Stream", "Cached $mediaId")
-            return@Factory dataSpec
+            // Don't return bare video ID as URI — CacheDataSource.openNextSource()
+            // may need a valid HTTP URL for uncached spans beyond this chunk.
+            // Fall through to resolve actual stream URL.
         }
         var dataSpecReturn: DataSpec = dataSpec
         var resolved = false
@@ -522,7 +526,13 @@ fun startService(
     serviceConnection: ServiceConnection,
 ) {
     val intent = Intent(context, SimpleMediaService::class.java)
-    context.startService(intent)
+    try {
+        ContextCompat.startForegroundService(context, intent)
+    } catch (e: IllegalStateException) {
+        // BackgroundServiceStartNotAllowedException (Android 12+)
+        // Service will still be created by bindService with BIND_AUTO_CREATE
+        Logger.w("Service", "Cannot start foreground service from background, falling back to bind only: ${e.message}")
+    }
     context.bindService(intent, serviceConnection, BIND_AUTO_CREATE)
     Logger.d("Service", "Service started")
 }
