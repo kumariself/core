@@ -102,27 +102,42 @@ internal class CommonRepositoryImpl(
             val usingProxy =
                 launch {
                     combine(
-                        dataStoreManager.usingProxy,
-                        dataStoreManager.proxyType,
-                        dataStoreManager.proxyHost,
-                        dataStoreManager.proxyPort,
-                    ) { usingProxy, proxyType, proxyHost, proxyPort ->
-                        Pair(usingProxy == DataStoreManager.TRUE, Triple(proxyType, proxyHost, proxyPort))
+                        combine(
+                            dataStoreManager.usingProxy,
+                            dataStoreManager.proxyType,
+                            dataStoreManager.proxyHost,
+                            dataStoreManager.proxyPort,
+                        ) { usingProxy, proxyType, proxyHost, proxyPort ->
+                            (usingProxy == DataStoreManager.TRUE) to ProxyData(proxyType, proxyHost, proxyPort, "", "")
+                        },
+                        dataStoreManager.proxyUsername,
+                        dataStoreManager.proxyPassword,
+                    ) { (enabled, baseData), username, password ->
+                        enabled to baseData.copy(username = username, password = password)
                     }.collectLatest { (usingProxy, data) ->
                         if (usingProxy) {
                             withContext(Dispatchers.IO) {
+                                // Set SOCKS proxy authenticator if credentials are provided
+                                if (data.type == DataStoreManager.ProxyType.PROXY_TYPE_SOCKS &&
+                                    data.username.isNotEmpty() && data.password.isNotEmpty()
+                                ) {
+                                    setProxyAuthenticator(data.username, data.password)
+                                } else {
+                                    clearProxyAuthenticator()
+                                }
                                 youTube.setProxy(
-                                    data.first == DataStoreManager.ProxyType.PROXY_TYPE_HTTP,
-                                    data.second,
-                                    data.third,
+                                    data.type == DataStoreManager.ProxyType.PROXY_TYPE_HTTP,
+                                    data.host,
+                                    data.port,
                                 )
                                 spotify.setProxy(
-                                    data.first == DataStoreManager.ProxyType.PROXY_TYPE_HTTP,
-                                    data.second,
-                                    data.third,
+                                    data.type == DataStoreManager.ProxyType.PROXY_TYPE_HTTP,
+                                    data.host,
+                                    data.port,
                                 )
                             }
                         } else {
+                            clearProxyAuthenticator()
                             youTube.removeProxy()
                             spotify.removeProxy()
                         }
@@ -287,6 +302,18 @@ internal class CommonRepositoryImpl(
             )
         }
 }
+
+private data class ProxyData(
+    val type: DataStoreManager.ProxyType,
+    val host: String,
+    val port: Int,
+    val username: String,
+    val password: String,
+)
+
+expect fun setProxyAuthenticator(username: String, password: String)
+
+expect fun clearProxyAuthenticator()
 
 expect fun getCookies(
     url: String,

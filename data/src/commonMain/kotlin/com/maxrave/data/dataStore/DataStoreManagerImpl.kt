@@ -724,6 +724,32 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val proxyUsername =
+        settingsDataStore.data.map { preferences ->
+            preferences[PROXY_USERNAME] ?: ""
+        }
+
+    override suspend fun setProxyUsername(proxyUsername: String) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[PROXY_USERNAME] = proxyUsername
+            }
+        }
+    }
+
+    override val proxyPassword =
+        settingsDataStore.data.map { preferences ->
+            preferences[PROXY_PASSWORD] ?: ""
+        }
+
+    override suspend fun setProxyPassword(proxyPassword: String) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[PROXY_PASSWORD] = proxyPassword
+            }
+        }
+    }
+
     override fun getJVMProxy(): ProxyConfiguration? =
         runBlocking {
             try {
@@ -731,10 +757,14 @@ internal class DataStoreManagerImpl(
                     val proxyType = proxyType.first()
                     val proxyHost = proxyHost.first()
                     val proxyPort = proxyPort.first()
+                    val proxyUsername = proxyUsername.first()
+                    val proxyPassword = proxyPassword.first()
                     return@runBlocking ProxyConfiguration(
                         proxyHost,
                         proxyPort,
                         proxyType,
+                        proxyUsername.ifEmpty { null },
+                        proxyPassword.ifEmpty { null },
                     )
                 } else {
                     return@runBlocking null
@@ -1415,6 +1445,8 @@ internal class DataStoreManagerImpl(
         val PROXY_TYPE = stringPreferencesKey("proxy_type")
         val PROXY_HOST = stringPreferencesKey("proxy_host")
         val PROXY_PORT = intPreferencesKey("proxy_port")
+        val PROXY_USERNAME = stringPreferencesKey("proxy_username")
+        val PROXY_PASSWORD = stringPreferencesKey("proxy_password")
         val ENDLESS_QUEUE = stringPreferencesKey("endless_queue")
         val KEEP_YOUTUBE_PLAYLIST_OFFLINE = stringPreferencesKey("keep_youtube_playlist_offline")
         val COMBINE_LOCAL_AND_YOUTUBE_LIKED = stringPreferencesKey("combine_local_and_youtube_liked")

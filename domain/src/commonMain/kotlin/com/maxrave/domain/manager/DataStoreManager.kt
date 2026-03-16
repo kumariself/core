@@ -184,6 +184,14 @@ interface DataStoreManager {
 
     suspend fun setProxyPort(proxyPort: Int)
 
+    val proxyUsername: Flow<String>
+
+    suspend fun setProxyUsername(proxyUsername: String)
+
+    val proxyPassword: Flow<String>
+
+    suspend fun setProxyPassword(proxyPassword: String)
+
     fun getJVMProxy(): ProxyConfiguration?
 
     val endlessQueue: Flow<String>
