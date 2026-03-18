@@ -4,11 +4,9 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.TextureView
-import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
-import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import com.maxrave.logger.Logger
 
@@ -65,12 +63,6 @@ internal class DelegatingForwardingPlayer(
         fun seekToNext()
 
         fun seekToPrevious()
-
-        /** Returns the full playlist as Media3 MediaItems for timeline/queue display. */
-        fun getPlaylistMediaItems(): List<MediaItem>
-
-        /** Returns the current item index within the playlist. */
-        fun getCurrentPlaylistIndex(): Int
     }
 
     /**
@@ -78,122 +70,6 @@ internal class DelegatingForwardingPlayer(
      * When null, all navigation methods fall back to the underlying ExoPlayer (single-item behavior).
      */
     var playlistNavigationProvider: PlaylistNavigationProvider? = null
-
-    /**
-     * Handler for intercepting setMediaItems() calls from MediaSession (e.g., Android Auto).
-     * When set, media items are redirected to [CrossfadeExoPlayerAdapter] instead of the
-     * underlying single-item ExoPlayer, keeping the adapter's internal playlist in sync.
-     */
-    var setMediaItemsHandler: ((items: List<MediaItem>, startIndex: Int, startPositionMs: Long) -> Unit)? = null
-
-    // ========== Playlist Timeline for MediaSession/Android Auto ==========
-
-    /**
-     * A [Timeline] that represents the full playlist from [CrossfadeExoPlayerAdapter].
-     *
-     * Each playlist item becomes a window in the timeline. The current item's window
-     * uses real playback data (duration, seekability) from the underlying ExoPlayer.
-     * Other items get placeholder data.
-     *
-     * This allows MediaSession to expose the full queue to Android Auto and other controllers,
-     * even though each underlying ExoPlayer only has a single MediaItem.
-     */
-    private class PlaylistTimeline(
-        private val mediaItems: List<MediaItem>,
-        private val currentIndex: Int,
-        private val underlyingTimeline: Timeline,
-    ) : Timeline() {
-        override fun getWindowCount(): Int = mediaItems.size
-
-        override fun getWindow(
-            windowIndex: Int,
-            window: Window,
-            defaultPositionProjectionUs: Long,
-        ): Window {
-            val isCurrentWindow = windowIndex == currentIndex
-            val mediaItem = mediaItems.getOrElse(windowIndex) { MediaItem.EMPTY }
-
-            if (isCurrentWindow && underlyingTimeline.windowCount > 0) {
-                // Get real playback data from the underlying single-item ExoPlayer
-                val tempWindow = Window()
-                underlyingTimeline.getWindow(0, tempWindow, defaultPositionProjectionUs)
-
-                window.set(
-                    /* uid = */ windowIndex,
-                    /* mediaItem = */ mediaItem,
-                    /* manifest = */ null,
-                    /* presentationStartTimeMs = */ C.TIME_UNSET,
-                    /* windowStartTimeMs = */ C.TIME_UNSET,
-                    /* elapsedRealtimeEpochOffsetMs = */ C.TIME_UNSET,
-                    /* isSeekable = */ tempWindow.isSeekable,
-                    /* isDynamic = */ false,
-                    /* liveConfiguration = */ null,
-                    /* defaultPositionUs = */ tempWindow.defaultPositionUs,
-                    /* durationUs = */ tempWindow.durationUs,
-                    /* firstPeriodIndex = */ windowIndex,
-                    /* lastPeriodIndex = */ windowIndex,
-                    /* positionInFirstPeriodUs = */ 0L,
-                )
-            } else {
-                window.set(
-                    /* uid = */ windowIndex,
-                    /* mediaItem = */ mediaItem,
-                    /* manifest = */ null,
-                    /* presentationStartTimeMs = */ C.TIME_UNSET,
-                    /* windowStartTimeMs = */ C.TIME_UNSET,
-                    /* elapsedRealtimeEpochOffsetMs = */ C.TIME_UNSET,
-                    /* isSeekable = */ true,
-                    /* isDynamic = */ false,
-                    /* liveConfiguration = */ null,
-                    /* defaultPositionUs = */ 0L,
-                    /* durationUs = */ C.TIME_UNSET,
-                    /* firstPeriodIndex = */ windowIndex,
-                    /* lastPeriodIndex = */ windowIndex,
-                    /* positionInFirstPeriodUs = */ 0L,
-                )
-            }
-
-            return window
-        }
-
-        override fun getPeriodCount(): Int = mediaItems.size
-
-        override fun getPeriod(
-            periodIndex: Int,
-            period: Period,
-            setIds: Boolean,
-        ): Period {
-            val isCurrentPeriod = periodIndex == currentIndex
-            val durationUs =
-                if (isCurrentPeriod && underlyingTimeline.windowCount > 0) {
-                    val tempPeriod = Period()
-                    underlyingTimeline.getPeriod(0, tempPeriod, false)
-                    tempPeriod.durationUs
-                } else {
-                    C.TIME_UNSET
-                }
-
-            period.set(
-                /* id = */ if (setIds) periodIndex else null,
-                /* uid = */ if (setIds) periodIndex else null,
-                /* windowIndex = */ periodIndex,
-                /* durationUs = */ durationUs,
-                /* positionInWindowUs = */ 0L,
-            )
-            return period
-        }
-
-        override fun getIndexOfPeriod(uid: Any): Int =
-            if (uid is Int && uid in mediaItems.indices) uid else C.INDEX_UNSET
-
-        override fun getUidOfPeriod(periodIndex: Int): Any = periodIndex
-
-        override fun getFirstWindowIndex(shuffleModeEnabled: Boolean): Int =
-            if (mediaItems.isEmpty()) C.INDEX_UNSET else 0
-
-        override fun getLastWindowIndex(shuffleModeEnabled: Boolean): Int =
-            if (mediaItems.isEmpty()) C.INDEX_UNSET else mediaItems.size - 1
-    }
 
     // ========== Listener Tracking ==========
 
@@ -411,78 +287,10 @@ internal class DelegatingForwardingPlayer(
         }
     }
 
-    // ========== Timeline Overrides for Android Auto Queue ==========
-    // With PlaylistTimeline, we CAN now override these because the timeline window count
-    // matches the playlist size, so currentMediaItemIndex < timeline.windowCount is always true.
-
-    override fun getCurrentTimeline(): Timeline {
-        val nav = playlistNavigationProvider ?: return super.getCurrentTimeline()
-        val items = nav.getPlaylistMediaItems()
-        if (items.isEmpty()) return super.getCurrentTimeline()
-
-        val currentIndex = nav.getCurrentPlaylistIndex().coerceIn(0, items.size - 1)
-        return PlaylistTimeline(items, currentIndex, super.getCurrentTimeline())
-    }
-
-    override fun getMediaItemCount(): Int =
-        playlistNavigationProvider?.getPlaylistMediaItems()?.size
-            ?: super.getMediaItemCount()
-
-    override fun getCurrentMediaItemIndex(): Int {
-        val nav = playlistNavigationProvider ?: return super.getCurrentMediaItemIndex()
-        val items = nav.getPlaylistMediaItems()
-        if (items.isEmpty()) return super.getCurrentMediaItemIndex()
-        return nav.getCurrentPlaylistIndex().coerceIn(0, items.size - 1)
-    }
-
-    override fun getCurrentPeriodIndex(): Int = getCurrentMediaItemIndex()
-
-    override fun getMediaItemAt(index: Int): MediaItem {
-        val nav = playlistNavigationProvider ?: return super.getMediaItemAt(index)
-        val items = nav.getPlaylistMediaItems()
-        return if (index in items.indices) items[index] else super.getMediaItemAt(index)
-    }
-
-    // ========== setMediaItems Interception for Android Auto ==========
-    // When MediaSession (Android Auto) calls setMediaItems(), redirect to the adapter
-    // so its internal playlist stays in sync with what Android Auto expects.
-
-    override fun setMediaItems(mediaItems: MutableList<MediaItem>, startMediaItemIndex: Int, startPositionMs: Long) {
-        val handler = setMediaItemsHandler
-        if (handler != null) {
-            handler(mediaItems, startMediaItemIndex, startPositionMs)
-        } else {
-            super.setMediaItems(mediaItems, startMediaItemIndex, startPositionMs)
-        }
-    }
-
-    override fun setMediaItems(mediaItems: MutableList<MediaItem>) {
-        setMediaItems(mediaItems, 0, C.TIME_UNSET)
-    }
-
-    override fun setMediaItems(mediaItems: MutableList<MediaItem>, resetPosition: Boolean) {
-        if (resetPosition) {
-            setMediaItems(mediaItems, 0, C.TIME_UNSET)
-        } else {
-            setMediaItems(mediaItems, getCurrentMediaItemIndex(), contentPosition)
-        }
-    }
-
-    override fun setMediaItem(mediaItem: MediaItem) {
-        setMediaItems(mutableListOf(mediaItem), 0, C.TIME_UNSET)
-    }
-
-    override fun setMediaItem(mediaItem: MediaItem, startPositionMs: Long) {
-        setMediaItems(mutableListOf(mediaItem), 0, startPositionMs)
-    }
-
-    override fun setMediaItem(mediaItem: MediaItem, resetPosition: Boolean) {
-        if (resetPosition) {
-            setMediaItems(mutableListOf(mediaItem), 0, C.TIME_UNSET)
-        } else {
-            setMediaItems(mutableListOf(mediaItem), 0, contentPosition)
-        }
-    }
+    // NOTE: Do NOT override getMediaItemCount() or getCurrentMediaItemIndex() here.
+    // These must remain consistent with the underlying ExoPlayer's Timeline (1 item, index 0).
+    // Media3's PlayerWrapper.createPositionInfo() validates that currentMediaItemIndex < timeline.windowCount.
+    // If we return the adapter's playlist index (e.g. 5) but Timeline only has 1 window, it crashes.
 
     // ========== Delegate Swap ==========
 
@@ -558,39 +366,16 @@ internal class DelegatingForwardingPlayer(
         val mediaItem = player.currentMediaItem ?: MediaItem.EMPTY
         val metadata = player.mediaMetadata
         val commands = getAvailableCommands()
-        val timeline = getCurrentTimeline()
 
         Logger.d(TAG, "Manually notifying ${trackedListeners.size} listeners about media item change: ${metadata.title}")
 
         trackedListeners.forEach { listener ->
             try {
-                listener.onTimelineChanged(timeline, Player.TIMELINE_CHANGE_REASON_SOURCE_UPDATE)
                 listener.onMediaItemTransition(mediaItem, Player.MEDIA_ITEM_TRANSITION_REASON_AUTO)
                 listener.onMediaMetadataChanged(metadata)
                 listener.onAvailableCommandsChanged(commands)
             } catch (e: Exception) {
                 Logger.w(TAG, "Error notifying listener about media item change: ${e.message}")
-            }
-        }
-    }
-
-    /**
-     * Notify all tracked listeners that the playlist structure has changed.
-     * Called when items are added, removed, or reordered in [CrossfadeExoPlayerAdapter]'s playlist.
-     * This updates the queue display in Android Auto and other MediaSession controllers.
-     */
-    fun notifyPlaylistChanged() {
-        val timeline = getCurrentTimeline()
-        val commands = getAvailableCommands()
-
-        Logger.d(TAG, "Notifying ${trackedListeners.size} listeners about playlist change (${timeline.windowCount} items)")
-
-        trackedListeners.forEach { listener ->
-            try {
-                listener.onTimelineChanged(timeline, Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED)
-                listener.onAvailableCommandsChanged(commands)
-            } catch (e: Exception) {
-                Logger.w(TAG, "Error notifying listener about playlist change: ${e.message}")
             }
         }
     }
