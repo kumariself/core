@@ -17,15 +17,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.lastOrNull
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -1373,112 +1373,113 @@ class VlcPlayerAdapter(
     private fun triggerCrossfadeTransition(nextIndex: Int) {
         if (nextIndex !in playlist.indices || isCrossfading) return
 
-        crossfadeJob = coroutineScope.launch {
-            try {
-                setCrossfading(true)
-                val nextMediaItem = playlist[nextIndex]
-                val nextVideoId = nextMediaItem.mediaId
+        crossfadeJob =
+            coroutineScope.launch {
+                try {
+                    setCrossfading(true)
+                    val nextMediaItem = playlist[nextIndex]
+                    val nextVideoId = nextMediaItem.mediaId
 
-                Logger.d(TAG, "Starting crossfade to track $nextIndex")
+                    Logger.d(TAG, "Starting crossfade to track $nextIndex")
 
-                // Extract URL on IO thread (network), VLC native calls stay on VLC thread
-                val cachedPrecache = precachedPlayers.remove(nextVideoId)
-                val nextPlayer: VlcPlayer? =
-                    if (cachedPrecache?.player != null) {
-                        Logger.d(TAG, "Using precached player for crossfade")
-                        cachedPrecache.player
-                    } else {
-                        val nextSource = withContext(Dispatchers.IO) { extractPlayableUrl(nextMediaItem) }
-                        if (nextSource == null || nextSource.url.isEmpty()) {
-                            Logger.e(TAG, "Failed to extract URL for crossfade")
-                            null
+                    // Extract URL on IO thread (network), VLC native calls stay on VLC thread
+                    val cachedPrecache = precachedPlayers.remove(nextVideoId)
+                    val nextPlayer: VlcPlayer? =
+                        if (cachedPrecache?.player != null) {
+                            Logger.d(TAG, "Using precached player for crossfade")
+                            cachedPrecache.player
                         } else {
-                            createMediaPlayerInternal(nextSource).also { newPlayer ->
-                                val options = buildVlcOptions(nextSource)
-                                newPlayer.mediaPlayer.media().startPaused(nextSource.url, *options)
-                            }
-                        }
-                    }
-
-                if (nextPlayer != null) {
-                    // Setup secondary player with its OWN listener.
-                    // DO NOT call setupPlayerEventsInternal() here - that would remove
-                    // the event listener from the current player (which is still playing).
-                    secondaryPlayer = nextPlayer
-                    nextPlayer.setEventListener(
-                        object : MediaPlayerEventAdapter() {
-                            override fun error(mediaPlayer: MediaPlayer) {
-                                Logger.e(TAG, "Secondary player error during crossfade")
-                                coroutineScope.launch {
-                                    crossfadeJob?.cancel()
-                                    secondaryPlayer?.release()
-                                    secondaryPlayer = null
-                                    setCrossfading(false)
-                                    seekTo(nextIndex, 0)
+                            val nextSource = withContext(Dispatchers.IO) { extractPlayableUrl(nextMediaItem) }
+                            if (nextSource == null || nextSource.url.isEmpty()) {
+                                Logger.e(TAG, "Failed to extract URL for crossfade")
+                                null
+                            } else {
+                                createMediaPlayerInternal(nextSource).also { newPlayer ->
+                                    val options = buildVlcOptions(nextSource)
+                                    newPlayer.mediaPlayer.media().startPaused(nextSource.url, *options)
                                 }
                             }
-                        },
+                        }
+
+                    if (nextPlayer != null) {
+                        // Setup secondary player with its OWN listener.
+                        // DO NOT call setupPlayerEventsInternal() here - that would remove
+                        // the event listener from the current player (which is still playing).
+                        secondaryPlayer = nextPlayer
+                        nextPlayer.setEventListener(
+                            object : MediaPlayerEventAdapter() {
+                                override fun error(mediaPlayer: MediaPlayer) {
+                                    Logger.e(TAG, "Secondary player error during crossfade")
+                                    coroutineScope.launch {
+                                        crossfadeJob?.cancel()
+                                        secondaryPlayer?.release()
+                                        secondaryPlayer = null
+                                        setCrossfading(false)
+                                        seekTo(nextIndex, 0)
+                                    }
+                                }
+                            },
+                        )
+                        nextPlayer.setVolume(0)
+                        nextPlayer.mediaPlayer.controls().play()
+                    }
+
+                    if (nextPlayer == null) {
+                        setCrossfading(false)
+                        seekTo(nextIndex, 0)
+                        return@launch
+                    }
+
+                    // Capture current index BEFORE advancing localCurrentMediaItemIndex
+                    crossfadeFromIndex = localCurrentMediaItemIndex
+
+                    // Update now playing and video surface immediately
+                    localCurrentMediaItemIndex = nextIndex
+                    if (nextPlayer.videoSurface != null) {
+                        _currentVideoSurface.value = nextPlayer.videoSurface
+                    }
+                    notifyListeners {
+                        onMediaItemTransition(
+                            nextMediaItem,
+                            PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_AUTO,
+                        )
+                    }
+
+                    Logger.d(TAG, "Now playing updated to track $nextIndex during crossfade")
+
+                    // Calculate effective crossfade duration based on ACTUAL remaining time.
+                    // If the secondary player wasn't precached, URL resolution + buffering may
+                    // have consumed part of the crossfade window. Use the lesser of configured
+                    // duration and actual remaining time so the animation ends when the old track does.
+                    val actualTimeRemaining =
+                        currentPlayer?.let { player ->
+                            val dur = player.length
+                            val pos = player.time
+                            if (dur > 0 && pos >= 0) (dur - pos) else crossfadeDurationMs.toLong()
+                        } ?: crossfadeDurationMs.toLong()
+
+                    val effectiveCrossfadeDurationMs =
+                        minOf(
+                            crossfadeDurationMs.toLong(),
+                            actualTimeRemaining,
+                        ).coerceAtLeast(1000L).toInt()
+
+                    Logger.d(
+                        TAG,
+                        "Crossfade duration: configured=${crossfadeDurationMs}ms, " +
+                            "actualRemaining=${actualTimeRemaining}ms, effective=${effectiveCrossfadeDurationMs}ms",
                     )
-                    nextPlayer.setVolume(0)
-                    nextPlayer.mediaPlayer.controls().play()
-                }
 
-                if (nextPlayer == null) {
-                    setCrossfading(false)
-                    seekTo(nextIndex, 0)
-                    return@launch
-                }
-
-                // Capture current index BEFORE advancing localCurrentMediaItemIndex
-                crossfadeFromIndex = localCurrentMediaItemIndex
-
-                // Update now playing and video surface immediately
-                localCurrentMediaItemIndex = nextIndex
-                if (nextPlayer.videoSurface != null) {
-                    _currentVideoSurface.value = nextPlayer.videoSurface
-                }
-                notifyListeners {
-                    onMediaItemTransition(
-                        nextMediaItem,
-                        PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_AUTO,
-                    )
-                }
-
-                Logger.d(TAG, "Now playing updated to track $nextIndex during crossfade")
-
-                // Calculate effective crossfade duration based on ACTUAL remaining time.
-                // If the secondary player wasn't precached, URL resolution + buffering may
-                // have consumed part of the crossfade window. Use the lesser of configured
-                // duration and actual remaining time so the animation ends when the old track does.
-                val actualTimeRemaining =
-                    currentPlayer?.let { player ->
-                        val dur = player.length
-                        val pos = player.time
-                        if (dur > 0 && pos >= 0) (dur - pos) else crossfadeDurationMs.toLong()
-                    } ?: crossfadeDurationMs.toLong()
-
-                val effectiveCrossfadeDurationMs =
-                    minOf(
-                        crossfadeDurationMs.toLong(),
-                        actualTimeRemaining,
-                    ).coerceAtLeast(1000L).toInt()
-
-                Logger.d(
-                    TAG,
-                    "Crossfade duration: configured=${crossfadeDurationMs}ms, " +
-                        "actualRemaining=${actualTimeRemaining}ms, effective=${effectiveCrossfadeDurationMs}ms",
-                )
-
-                // Perform crossfade animation with effective duration
-                performCrossfade(nextIndex, nextPlayer, effectiveCrossfadeDurationMs)
-            } catch (e: Exception) {
-                if (e !is CancellationException) {
-                    Logger.e(TAG, "Crossfade error: ${e.message}", e)
-                    setCrossfading(false)
-                    seekTo(nextIndex, 0)
+                    // Perform crossfade animation with effective duration
+                    performCrossfade(nextIndex, nextPlayer, effectiveCrossfadeDurationMs)
+                } catch (e: Exception) {
+                    if (e !is CancellationException) {
+                        Logger.e(TAG, "Crossfade error: ${e.message}", e)
+                        setCrossfading(false)
+                        seekTo(nextIndex, 0)
+                    }
                 }
             }
-        }
     }
 
     /**
@@ -1893,7 +1894,7 @@ class VlcPlayerAdapter(
             }
         if (!downloadFiles.isNullOrEmpty()) {
             val audioFile = downloadFiles.firstOrNull { !it.name.contains(MERGING_DATA_TYPE.VIDEO) }
-            if (audioFile != null && audioFile.length() > 0) {
+            if (audioFile != null && audioFile.length() > 0 && audioFile.exists()) {
                 // VLC accepts absolute file paths directly as MRL
                 return PlayableSource(isVideo = false, url = audioFile.absolutePath)
             }
@@ -2051,20 +2052,26 @@ class VlcPlayer(
 
     val time: Long
         get() =
-            if (isReleased) 0L
-            else try {
-                mediaPlayer.status().time()
-            } catch (_: Exception) {
+            if (isReleased) {
                 0L
+            } else {
+                try {
+                    mediaPlayer.status().time()
+                } catch (_: Exception) {
+                    0L
+                }
             }
 
     val length: Long
         get() =
-            if (isReleased) 0L
-            else try {
-                mediaPlayer.status().length()
-            } catch (_: Exception) {
+            if (isReleased) {
                 0L
+            } else {
+                try {
+                    mediaPlayer.status().length()
+                } catch (_: Exception) {
+                    0L
+                }
             }
 
     fun release() {
