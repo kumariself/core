@@ -235,6 +235,16 @@ internal class CrossfadeExoPlayerAdapter(
     // Loading management
     private var currentLoadJob: Job? = null
 
+    // ========== Cached Media3 MediaItems for Timeline ==========
+    // Cached list of Media3 MediaItems for the PlaylistTimeline.
+    // Rebuilt when the playlist changes to avoid repeated conversions.
+    @Volatile
+    private var cachedMedia3PlaylistItems: List<MediaItem> = emptyList()
+
+    private fun rebuildMedia3PlaylistCache() {
+        cachedMedia3PlaylistItems = playlist.map { it.toMedia3MediaItem() }
+    }
+
     // ========== ForwardingPlayer for MediaSession ==========
 
     // Create an initial idle ExoPlayer for MediaSession to hold
@@ -253,8 +263,8 @@ internal class CrossfadeExoPlayerAdapter(
 
         // Wire up playlist navigation so ForwardingPlayer (and thus MediaSession)
         // can see the full playlist state instead of the single-item ExoPlayer state.
-        // Only navigation commands are overridden — NOT getMediaItemCount/getCurrentMediaItemIndex
-        // which must stay consistent with ExoPlayer's internal Timeline to avoid crashes.
+        // With PlaylistTimeline, the full playlist is exposed as a multi-window timeline
+        // so Android Auto can display the complete queue and navigate properly.
         forwardingPlayer.playlistNavigationProvider =
             object : DelegatingForwardingPlayer.PlaylistNavigationProvider {
                 override fun hasNextMediaItem(): Boolean = this@CrossfadeExoPlayerAdapter.hasNextMediaItem()
@@ -264,7 +274,59 @@ internal class CrossfadeExoPlayerAdapter(
                 override fun seekToNext(): Unit = this@CrossfadeExoPlayerAdapter.seekToNext()
 
                 override fun seekToPrevious(): Unit = this@CrossfadeExoPlayerAdapter.seekToPrevious()
+
+                override fun getPlaylistMediaItems(): List<MediaItem> = cachedMedia3PlaylistItems
+
+                override fun getCurrentPlaylistIndex(): Int = localCurrentMediaItemIndex
             }
+
+        // Intercept setMediaItems() from MediaSession (Android Auto) to keep
+        // the adapter's internal playlist in sync.
+        forwardingPlayer.setMediaItemsHandler = { items, startIndex, startPositionMs ->
+            setMediaItemsFromSession(items, startIndex, startPositionMs)
+        }
+    }
+
+    /**
+     * Handle setMediaItems() calls from MediaSession (e.g., Android Auto).
+     * Updates the adapter's internal playlist and loads the requested track.
+     */
+    private fun setMediaItemsFromSession(items: List<MediaItem>, startIndex: Int, startPositionMs: Long) {
+        coroutineScope.launch {
+            currentLoadJob?.cancel()
+            cancelPrecaching()
+
+            // Cancel any ongoing crossfade
+            if (isCrossfading) {
+                crossfadeJob?.cancel()
+                crossfadeJob = null
+                currentPlayerFilter?.enabled = false
+                secondaryPlayerFilter?.enabled = false
+                secondaryPlayer?.release()
+                secondaryPlayer = null
+                secondaryPlayerFilter = null
+                setCrossfading(false)
+            }
+
+            playlist.clear()
+            clearAllPrecacheInternal()
+            playlist.addAll(items.map { it.toGenericMediaItem() })
+
+            val safeIndex = if (playlist.isEmpty()) 0 else startIndex.coerceIn(0, playlist.size - 1)
+            localCurrentMediaItemIndex = safeIndex
+
+            if (internalShuffleModeEnabled) {
+                createShuffleOrder()
+            }
+
+            rebuildMedia3PlaylistCache()
+            notifyTimelineChanged("TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED")
+
+            if (playlist.isNotEmpty()) {
+                val pos = if (startPositionMs == C.TIME_UNSET) 0L else startPositionMs
+                loadAndPlayTrackInternal(safeIndex, pos, true)
+            }
+        }
     }
 
     // ========== ExoPlayer Instance Factory ==========
@@ -2430,5 +2492,10 @@ internal class CrossfadeExoPlayerAdapter(
     private fun notifyTimelineChanged(reason: String) {
         val list = getShuffledMediaItemList()
         listeners.forEach { it.onTimelineChanged(list, reason) }
+
+        // Rebuild cached Media3 items and notify ForwardingPlayer
+        // so MediaSession/Android Auto sees the updated queue
+        rebuildMedia3PlaylistCache()
+        forwardingPlayer.notifyPlaylistChanged()
     }
 }
