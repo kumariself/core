@@ -8,6 +8,10 @@ import androidx.annotation.DrawableRes
 import androidx.core.net.toUri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
+import androidx.media3.common.Player.COMMAND_GET_TIMELINE
+import androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT
+import androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.LibraryResult
@@ -20,11 +24,15 @@ import androidx.media3.session.SessionResult
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.maxrave.common.Config
 import com.maxrave.common.MEDIA_CUSTOM_COMMAND
 import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.home.HomeItem
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
+import com.maxrave.domain.mediaservice.handler.PlayerEvent
+import com.maxrave.domain.mediaservice.handler.PlaylistType
+import com.maxrave.domain.mediaservice.handler.QueueData
 import com.maxrave.domain.repository.HomeRepository
 import com.maxrave.domain.repository.LocalPlaylistRepository
 import com.maxrave.domain.repository.PlaylistRepository
@@ -33,6 +41,7 @@ import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.connectArtists
+import com.maxrave.domain.utils.toArrayListTrack
 import com.maxrave.domain.utils.toListName
 import com.maxrave.domain.utils.toListTrack
 import com.maxrave.domain.utils.toPlaylistEntity
@@ -41,14 +50,13 @@ import com.maxrave.domain.utils.toTrack
 import com.maxrave.logger.Logger
 import com.maxrave.media3.R
 import com.maxrave.media3.extension.toMediaItem
-import com.maxrave.domain.mediaservice.handler.PlayerEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.last
 import kotlinx.coroutines.flow.lastOrNull
 import kotlinx.coroutines.guava.future
+import kotlinx.coroutines.launch
 
 private const val TAG = "AndroidAuto"
 
@@ -90,7 +98,34 @@ internal class SimpleMediaSessionCallback(
         return MediaSession.ConnectionResult
             .AcceptedResultBuilder(session)
             .setAvailableSessionCommands(sessionCommands)
-            .build()
+            .setAvailablePlayerCommands(
+                Player.Commands
+                    .Builder()
+                    .addAllCommands()
+                    .remove(COMMAND_GET_TIMELINE)
+                    .build(),
+            ).build()
+    }
+
+    override fun onPlayerCommandRequest(
+        session: MediaSession,
+        controller: MediaSession.ControllerInfo,
+        playerCommand: Int,
+    ): Int {
+        Logger.w(TAG, "Player Command $playerCommand")
+        scope.launch {
+            when (playerCommand) {
+                COMMAND_SEEK_TO_NEXT -> {
+                    mediaPlayerHandler.onPlayerEvent(PlayerEvent.Next)
+                }
+                COMMAND_SEEK_TO_PREVIOUS -> {
+                    mediaPlayerHandler.onPlayerEvent(PlayerEvent.Previous)
+                }
+                COMMAND_GET_TIMELINE -> {
+                }
+            }
+        }
+        return super.onPlayerCommandRequest(session, controller, playerCommand)
     }
 
     @UnstableApi
@@ -168,7 +203,9 @@ internal class SimpleMediaSessionCallback(
                             resource.data
                         }
 
-                        else -> emptyList()
+                        else -> {
+                            emptyList()
+                        }
                     }
                 }
             if (searchResult != null) {
@@ -219,7 +256,7 @@ internal class SimpleMediaSessionCallback(
                     .build()
             return@future LibraryResult.ofItemList(
                 when (parentId) {
-                    ROOT ->
+                    ROOT -> {
                         listOf(
                             browsableMediaItem(
                                 HOME,
@@ -250,21 +287,24 @@ internal class SimpleMediaSessionCallback(
                                 MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS,
                             ),
                         )
+                    }
 
-                    SONG ->
+                    SONG -> {
                         songRepository
                             .getAllSongs(1000)
                             .last()
                             .sortedBy { it.inLibrary }
                             .map { it.toMediaItem(parentId) }
+                    }
 
-                    FAVORITE ->
+                    FAVORITE -> {
                         songRepository
                             .getLikedSongs()
                             .first()
                             .map { it.toMediaItem(parentId) }
+                    }
 
-                    PLAYLIST ->
+                    PLAYLIST -> {
                         localPlaylistRepository
                             .getAllLocalPlaylists()
                             .first()
@@ -278,6 +318,7 @@ internal class SimpleMediaSessionCallback(
                                     MediaMetadata.MEDIA_TYPE_PLAYLIST,
                                 )
                             }
+                    }
 
                     HOME -> {
                         val temp =
@@ -398,7 +439,9 @@ internal class SimpleMediaSessionCallback(
                                 }
                             }
 
-                            else -> emptyList()
+                            else -> {
+                                emptyList()
+                            }
                         }
                     }
                 },
@@ -438,27 +481,23 @@ internal class SimpleMediaSessionCallback(
             when (path.firstOrNull()) {
                 SONG -> {
                     val songId = path.getOrNull(1) ?: return@future defaultResult
-                    val allSongs = songRepository.getAllSongs(1000).lastOrNull()?.sortedBy { it.inLibrary } ?: emptyList()
-                    if (allSongs.find { it.videoId == songId } == null) {
-                        val song =
-                            searchTempList.find { it.videoId == songId }
-                                ?: streamRepository.getFullMetadata(songId).lastOrNull()?.data
-                                ?: return@future defaultResult
-                        songRepository.insertSong(song.toSongEntity()).lastOrNull()
-                        val cloneList = allSongs.toMutableList()
-                        cloneList.add(0, song.toSongEntity())
-                        MediaSession.MediaItemsWithStartPosition(
-                            cloneList.map { it.toMediaItem() },
-                            cloneList.indexOfFirst { it.videoId == songId }.takeIf { it != -1 } ?: 0,
-                            startPositionMs,
-                        )
-                    } else {
-                        MediaSession.MediaItemsWithStartPosition(
-                            allSongs.map { it.toMediaItem() },
-                            allSongs.indexOfFirst { it.videoId == songId }.takeIf { it != -1 } ?: 0,
-                            startPositionMs,
-                        )
-                    }
+                    val firstQueue = songRepository.getSongById(songId).first()?.toTrack() ?: return@future defaultResult
+                    mediaPlayerHandler.setQueueData(
+                        QueueData.Data(
+                            listTracks = arrayListOf(firstQueue),
+                            firstPlayedTrack = firstQueue,
+                            playlistId = "RDAMVM$songId",
+                            playlistName = "\"${firstQueue.title}\" Radio",
+                            playlistType = PlaylistType.RADIO,
+                            continuation = null,
+                        ),
+                    )
+                    mediaPlayerHandler.loadMediaItem(
+                        firstQueue,
+                        Config.SONG_CLICK,
+                        0,
+                    )
+                    defaultResult
                 }
 
                 FAVORITE -> {
@@ -467,36 +506,79 @@ internal class SimpleMediaSessionCallback(
                     if (likedSongs.isEmpty()) {
                         defaultResult
                     } else {
-                        MediaSession.MediaItemsWithStartPosition(
-                            likedSongs.map { it.toMediaItem() },
-                            likedSongs.indexOfFirst { it.videoId == songId }.takeIf { it != -1 } ?: 0,
-                            startPositionMs,
+                        var index = 0
+                        val clickedSong =
+                            likedSongs
+                                .firstOrNull { it.videoId == songId }
+                                ?.also {
+                                    index = likedSongs.indexOf(it)
+                                }?.toTrack() ?: return@future defaultResult
+                        mediaPlayerHandler.setQueueData(
+                            QueueData.Data(
+                                listTracks = likedSongs.toArrayListTrack(),
+                                firstPlayedTrack = clickedSong,
+                                playlistId = null,
+                                playlistName = context.getString(R.string.favorites),
+                                playlistType = PlaylistType.LOCAL_PLAYLIST,
+                                continuation = null,
+                            ),
                         )
+                        mediaPlayerHandler.loadMediaItem(
+                            clickedSong,
+                            Config.PLAYLIST_CLICK,
+                            index,
+                        )
+                        defaultResult
                     }
                 }
 
                 PLAYLIST -> {
                     val songId = path.getOrNull(2) ?: return@future defaultResult
                     val playlistId = path.getOrNull(1) ?: return@future defaultResult
-                    Logger.d("SimpleMediaSessionCallback", "onSetMediaItems playlistId: $playlistId")
+                    Logger.d(TAG, "onSetMediaItems playlistId: $playlistId")
+                    var title = ""
                     val songs =
                         localPlaylistRepository
                             .getLocalPlaylist(playlistId.toLong())
                             .lastOrNull()
                             ?.data
-                            ?.tracks
+                            ?.also {
+                                title = it.title
+                            }?.tracks
                             ?.let {
                                 songRepository.getSongsByListVideoId(it)
                             }?.lastOrNull()
-                    Logger.w("SimpleMediaSessionCallback", "onSetMediaItems songs: $songs")
+                    Logger.w(TAG, "onSetMediaItems songs: $songs")
                     if (songs.isNullOrEmpty()) {
                         defaultResult
                     } else {
-                        MediaSession.MediaItemsWithStartPosition(
-                            songs.map { it.toMediaItem() },
-                            songs.indexOfFirst { it.videoId == songId }.takeIf { it != -1 } ?: 0,
-                            startPositionMs,
+                        var index = 0
+                        val clickedSong =
+                            songs
+                                .firstOrNull { it.videoId == songId }
+                                ?.also {
+                                    index = songs.indexOf(it)
+                                }?.toTrack() ?: return@future defaultResult
+                        mediaPlayerHandler.setQueueData(
+                            QueueData.Data(
+                                listTracks = songs.toArrayListTrack(),
+                                firstPlayedTrack = clickedSong,
+                                playlistId = playlistId,
+                                playlistName = "${
+                                    context.getString(
+                                        R.string.playlists,
+                                    )
+                                } \"${title}\"",
+                                playlistType = PlaylistType.LOCAL_PLAYLIST,
+                                continuation = null,
+                            ),
                         )
+                        mediaPlayerHandler.loadMediaItem(
+                            clickedSong,
+                            Config.PLAYLIST_CLICK,
+                            index,
+                        )
+                        defaultResult
                     }
                 }
 
@@ -515,11 +597,23 @@ internal class SimpleMediaSessionCallback(
                             songs.forEach {
                                 songRepository.insertSong(it.toSongEntity()).first()
                             }
-                            MediaSession.MediaItemsWithStartPosition(
-                                songs.map { it.toMediaItem() },
-                                songs.indexOfFirst { it.videoId == songId }.takeIf { it != -1 } ?: 0,
-                                startPositionMs,
+                            val firstQueue = songs.firstOrNull { it.videoId == songId } ?: return@future defaultResult
+                            mediaPlayerHandler.setQueueData(
+                                QueueData.Data(
+                                    listTracks = songs,
+                                    firstPlayedTrack = firstQueue,
+                                    playlistId = "RDAMVM$songId",
+                                    playlistName = "\"${firstQueue.title}\" Radio",
+                                    playlistType = PlaylistType.RADIO,
+                                    continuation = null,
+                                ),
                             )
+                            mediaPlayerHandler.loadMediaItem(
+                                firstQueue,
+                                Config.SONG_CLICK,
+                                0,
+                            )
+                            defaultResult
                         }
                     } else if (type == PLAYLIST) {
                         val songId = path.getOrNull(4) ?: return@future defaultResult
@@ -531,25 +625,45 @@ internal class SimpleMediaSessionCallback(
                         if (tracks.isNullOrEmpty()) {
                             defaultResult
                         } else if (tracks.isNotEmpty()) {
-                            tracks
-                                .let {
-                                    songRepository
-                                        .getSongsByListVideoId(tracks)
-                                        .first()
-                                        .sortedBy {
-                                            tracks.indexOf(it.videoId)
-                                        }.also {
-                                            Logger.w(TAG, "onSetMediaItems list songs: $it")
-                                        }.map { it.toMediaItem() }
-                                }.let { mediaItemList ->
-                                    MediaSession.MediaItemsWithStartPosition(
-                                        mediaItemList,
-                                        mediaItemList
-                                            .indexOfFirst { it.mediaId == songId }
-                                            .takeIf { it != -1 } ?: 0,
-                                        startPositionMs,
-                                    )
-                                }
+                            val songs =
+                                tracks
+                                    .let {
+                                        songRepository
+                                            .getSongsByListVideoId(tracks)
+                                            .first()
+                                            .sortedBy {
+                                                tracks.indexOf(it.videoId)
+                                            }.also {
+                                                Logger.w(TAG, "onSetMediaItems list songs: $it")
+                                            }
+                                    }
+                            var index = 0
+                            val clickedSong =
+                                songs
+                                    .firstOrNull { it.videoId == songId }
+                                    ?.also {
+                                        index = songs.indexOf(it)
+                                    }?.toTrack() ?: return@future defaultResult
+                            mediaPlayerHandler.setQueueData(
+                                QueueData.Data(
+                                    listTracks = songs.toArrayListTrack(),
+                                    firstPlayedTrack = clickedSong,
+                                    playlistId = playlistId,
+                                    playlistName = "${
+                                        context.getString(
+                                            R.string.playlists,
+                                        )
+                                    } \"${playlistEntity.title}\"",
+                                    playlistType = PlaylistType.LOCAL_PLAYLIST,
+                                    continuation = null,
+                                ),
+                            )
+                            mediaPlayerHandler.loadMediaItem(
+                                clickedSong,
+                                Config.PLAYLIST_CLICK,
+                                index,
+                            )
+                            defaultResult
                         } else {
                             defaultResult
                         }
@@ -558,7 +672,9 @@ internal class SimpleMediaSessionCallback(
                     }
                 }
 
-                else -> defaultResult
+                else -> {
+                    defaultResult
+                }
             }
         }
 
