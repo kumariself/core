@@ -401,6 +401,21 @@ internal class LocalDataSource(
         newPosition,
     )
 
+    suspend fun getAllPlaylistPairSongByPosition(playlistId: Long) =
+        databaseDao.getAllPlaylistPairSongByPosition(playlistId)
+
+    suspend fun shiftPositionsForward(
+        playlistId: Long,
+        from: Int,
+        to: Int,
+    ) = databaseDao.shiftPositionsForward(playlistId, from, to)
+
+    suspend fun shiftPositionsBackward(
+        playlistId: Long,
+        from: Int,
+        to: Int,
+    ) = databaseDao.shiftPositionsBackward(playlistId, from, to)
+
     suspend fun deletePairSongLocalPlaylist(
         playlistId: Long,
         videoId: String,

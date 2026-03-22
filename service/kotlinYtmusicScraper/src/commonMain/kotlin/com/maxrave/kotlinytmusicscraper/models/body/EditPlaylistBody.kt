@@ -12,9 +12,10 @@ data class EditPlaylistBody(
     @Serializable
     data class Action(
         val action: String = "ACTION_SET_PLAYLIST_NAME",
-        val playlistName: String?,
+        val playlistName: String? = null,
         val addedVideoId: String? = null,
         val removedVideoId: String? = null,
         val setVideoId: String? = null,
+        val movedSetVideoIdSuccessor: String? = null,
     )
 }

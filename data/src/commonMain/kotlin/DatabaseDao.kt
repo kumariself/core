@@ -647,6 +647,29 @@ interface DatabaseDao {
     )
 
     @Query(
+        "SELECT * FROM pair_song_local_playlist WHERE playlistId = :playlistId ORDER BY position ASC",
+    )
+    suspend fun getAllPlaylistPairSongByPosition(playlistId: Long): List<PairSongLocalPlaylist>
+
+    @Query(
+        "UPDATE pair_song_local_playlist SET position = position + 1 WHERE playlistId = :playlistId AND position >= :from AND position < :to",
+    )
+    suspend fun shiftPositionsForward(
+        playlistId: Long,
+        from: Int,
+        to: Int,
+    )
+
+    @Query(
+        "UPDATE pair_song_local_playlist SET position = position - 1 WHERE playlistId = :playlistId AND position > :from AND position <= :to",
+    )
+    suspend fun shiftPositionsBackward(
+        playlistId: Long,
+        from: Int,
+        to: Int,
+    )
+
+    @Query(
         "SELECT * FROM pair_song_local_playlist WHERE playlistId = :playlistId AND position >= :from AND position < :to ORDER BY position " +
             "LIMIT 50",
     )

@@ -530,10 +530,38 @@ class Ytmusic {
                 actions =
                     listOf(
                         EditPlaylistBody.Action(
-                            playlistName = null,
                             action = "ACTION_REMOVE_VIDEO",
                             removedVideoId = videoId,
                             setVideoId = setVideoId,
+                        ),
+                    ),
+            ),
+        )
+    }
+
+    /**
+     * Move a playlist item before another item.
+     * @param playlistId The YouTube playlist ID
+     * @param setVideoId The setVideoId of the item to move
+     * @param movedSetVideoIdSuccessor The setVideoId of the item that should come AFTER the moved item.
+     *        If null, the item is moved to the end of the playlist.
+     */
+    suspend fun moveItemYouTubePlaylist(
+        playlistId: String,
+        setVideoId: String,
+        movedSetVideoIdSuccessor: String? = null,
+    ) = httpClient.post("browse/edit_playlist") {
+        ytClient(WEB_REMIX, setLogin = true)
+        setBody(
+            EditPlaylistBody(
+                context = WEB_REMIX.toContext(locale, visitorData),
+                playlistId = playlistId.removePrefix("VL"),
+                actions =
+                    listOf(
+                        EditPlaylistBody.Action(
+                            action = "ACTION_MOVE_VIDEO_BEFORE",
+                            setVideoId = setVideoId,
+                            movedSetVideoIdSuccessor = movedSetVideoIdSuccessor,
                         ),
                     ),
             ),

@@ -62,6 +62,19 @@ interface LocalPlaylistRepository {
         newPosition: Int,
     ): Flow<String>
 
+    /**
+     * Move a song within a synced playlist: updates both YouTube (via API) and local DB positions.
+     * @param playlistId Local playlist ID
+     * @param fromIndex The current index of the item being moved (0-based, in CustomOrder)
+     * @param toIndex The target index to move the item to (0-based, in CustomOrder)
+     * @return Flow<LocalResource<String>> success/error message
+     */
+    fun moveItemInSyncedPlaylist(
+        playlistId: Long,
+        fromIndex: Int,
+        toIndex: Int,
+    ): Flow<LocalResource<String>>
+
     fun downloadStateFlow(id: Long): Flow<Int>
 
     fun getAllDownloadingLocalPlaylists(): Flow<List<LocalPlaylistEntity>>

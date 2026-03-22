@@ -1828,6 +1828,22 @@ class YouTube {
         ytMusic.addItemYouTubePlaylist(playlistId, videoId).body<AddItemYouTubePlaylistResponse>()
     }
 
+    /**
+     * Move a playlist item before another item in a YouTube playlist.
+     * @param playlistId The YouTube playlist ID
+     * @param setVideoId The setVideoId of the item to move
+     * @param movedSetVideoIdSuccessor The setVideoId of the item that should come AFTER the moved item.
+     *        If null, the item is moved to the end of the playlist.
+     * @return Result<Int> HTTP status code
+     */
+    suspend fun movePlaylistItem(
+        playlistId: String,
+        setVideoId: String,
+        movedSetVideoIdSuccessor: String? = null,
+    ) = runCatching {
+        ytMusic.moveItemYouTubePlaylist(playlistId, setVideoId, movedSetVideoIdSuccessor).status.value
+    }
+
     suspend fun editPlaylist(
         playlistId: String,
         title: String,

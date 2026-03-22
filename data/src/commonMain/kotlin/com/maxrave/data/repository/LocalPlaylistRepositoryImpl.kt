@@ -826,4 +826,97 @@ internal class LocalPlaylistRepositoryImpl(
             delay(100)
             emit("Position updated")
         }.flowOn(Dispatchers.IO)
+
+    /**
+     * Move a song within a synced playlist.
+     * 1. Resolve setVideoIds for the moved item and its new successor from the local DB
+     * 2. Call YouTube API (ACTION_MOVE_VIDEO_BEFORE) to reorder on YouTube
+     * 3. Update local DB positions (shift items between from/to, then place the moved item)
+     */
+    override fun moveItemInSyncedPlaylist(
+        playlistId: Long,
+        fromIndex: Int,
+        toIndex: Int,
+    ): Flow<LocalResource<String>> =
+        flow<LocalResource<String>> {
+            if (fromIndex == toIndex) {
+                emit(LocalResource.Success("No change"))
+                return@flow
+            }
+            emit(LocalResource.Loading())
+
+            val localPlaylist = localDataSource.getLocalPlaylist(playlistId) ?: run {
+                emit(LocalResource.Error("Playlist not found"))
+                return@flow
+            }
+            val ytPlaylistId = localPlaylist.youtubePlaylistId ?: run {
+                emit(LocalResource.Error("Playlist is not synced with YouTube"))
+                return@flow
+            }
+
+            // Get all pairs ordered by position to resolve indexes
+            val allPairs = localDataSource.getAllPlaylistPairSongByPosition(playlistId)
+            if (fromIndex >= allPairs.size || toIndex >= allPairs.size) {
+                emit(LocalResource.Error("Index out of bounds"))
+                return@flow
+            }
+
+            val movedPair = allPairs[fromIndex]
+            val movedVideoId = movedPair.songId
+
+            // Resolve setVideoId of the moved item
+            val movedSetVideoIdEntity = localDataSource.getSetVideoId(movedVideoId)
+            val movedSetVideoId = movedSetVideoIdEntity?.setVideoId ?: run {
+                emit(LocalResource.Error("SetVideoId not found for moved item: $movedVideoId"))
+                return@flow
+            }
+
+            // Resolve the successor's setVideoId (the item that should come AFTER the moved item)
+            // If moving down (fromIndex < toIndex): successor is the item at toIndex + 1 (if exists)
+            // If moving up (fromIndex > toIndex): successor is the item at toIndex
+            val successorSetVideoId: String? = if (fromIndex < toIndex) {
+                // Moving down: after removal, the successor is at toIndex + 1 in original list
+                val successorIndex = toIndex + 1
+                if (successorIndex < allPairs.size) {
+                    val successorVideoId = allPairs[successorIndex].songId
+                    localDataSource.getSetVideoId(successorVideoId)?.setVideoId
+                } else {
+                    null // Move to end
+                }
+            } else {
+                // Moving up: successor is the item currently at toIndex
+                val successorVideoId = allPairs[toIndex].songId
+                localDataSource.getSetVideoId(successorVideoId)?.setVideoId
+            }
+
+            // Step 1: Call YouTube API
+            youTube
+                .movePlaylistItem(
+                    playlistId = ytPlaylistId,
+                    setVideoId = movedSetVideoId,
+                    movedSetVideoIdSuccessor = successorSetVideoId,
+                ).onSuccess {
+                    Logger.d(TAG, "moveItemInSyncedPlaylist: YouTube API success, status=$it")
+                }.onFailure { e ->
+                    Logger.e(TAG, "moveItemInSyncedPlaylist: YouTube API failed: ${e.message}")
+                    emit(LocalResource.Error("Failed to reorder on YouTube: ${e.message}"))
+                    return@flow
+                }
+
+            // Step 2: Update local DB positions
+            val movedPosition = movedPair.position
+            val targetPosition = allPairs[toIndex].position
+
+            if (fromIndex < toIndex) {
+                // Moving down: shift items between (from, to] backward by 1
+                localDataSource.shiftPositionsBackward(playlistId, movedPosition, targetPosition)
+            } else {
+                // Moving up: shift items between [to, from) forward by 1
+                localDataSource.shiftPositionsForward(playlistId, targetPosition, movedPosition)
+            }
+            // Place the moved item at the target position
+            localDataSource.editPositionOfSongInPlaylist(playlistId, movedVideoId, targetPosition)
+
+            emit(LocalResource.Success("Position updated"))
+        }.flowOn(Dispatchers.IO)
 }
