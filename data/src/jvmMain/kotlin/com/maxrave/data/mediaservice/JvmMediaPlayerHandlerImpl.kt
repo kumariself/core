@@ -282,14 +282,16 @@ class JvmMediaPlayerHandlerImpl(
             player.shuffleModeEnabled = restoredShuffle
             player.repeatMode = restoredRepeatMode
             // Ensure controlState is in sync after restore, regardless of listener callbacks
-            _controlState.value = _controlState.value.copy(
-                isShuffle = restoredShuffle,
-                repeatState = when (restoredRepeatMode) {
-                    PlayerConstants.REPEAT_MODE_ONE -> RepeatState.One
-                    PlayerConstants.REPEAT_MODE_ALL -> RepeatState.All
-                    else -> RepeatState.None
-                },
-            )
+            _controlState.value =
+                _controlState.value.copy(
+                    isShuffle = restoredShuffle,
+                    repeatState =
+                        when (restoredRepeatMode) {
+                            PlayerConstants.REPEAT_MODE_ONE -> RepeatState.One
+                            PlayerConstants.REPEAT_MODE_ALL -> RepeatState.All
+                            else -> RepeatState.None
+                        },
+                )
         }
         player.volume = runBlocking { dataStoreManager.playerVolume.first() }
         mayBeRestoreQueue()
@@ -407,7 +409,7 @@ class JvmMediaPlayerHandlerImpl(
                             if (it == TRUE && discordRPC == null) {
                                 discordRPC = DiscordRPC(dataStoreManager.discordToken.first())
                                 nowPlayingState.value.songEntity?.let { song ->
-                                    discordRPC?.updateSong(song)
+                                    updateDiscordRpc(song)
                                 }
                             } else if (it == FALSE) {
                                 if (discordRPC?.isRpcRunning() == true) {
@@ -730,6 +732,9 @@ class JvmMediaPlayerHandlerImpl(
                     delay(100)
                     _simpleMediaState.value = SimpleMediaState.Progress(player.currentPosition)
                     updateMacOSElapsedTime()
+                    nowPlayingState.value.songEntity?.let {
+                        updateDiscordRpc(it)
+                    }
                 }
             }
     }
@@ -2344,7 +2349,12 @@ class JvmMediaPlayerHandlerImpl(
 
     private fun updateDiscordRpc(song: SongEntity) {
         coroutineScope.launch {
-            discordRPC?.updateSong(song)
+            discordRPC?.updateSong(
+                getProgress(),
+                getPlayerDuration(),
+                dataStoreManager.playbackSpeed.first(),
+                song,
+            )
         }
     }
 

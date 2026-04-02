@@ -7,10 +7,23 @@ import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
 class DiscordRPC(
-    token: String
+    token: String,
 ) : KizzyRPC(token) {
     @OptIn(ExperimentalTime::class)
-    suspend fun updateSong(song: SongEntity) = runCatching {
+    suspend fun updateSong(
+        currentPlaybackTimeMillis: Long,
+        durationMillis: Long,
+        playbackSpeed: Float = 1.0f,
+        song: SongEntity,
+    ) = runCatching {
+        val currentTime = Clock.System.now().toEpochMilliseconds()
+
+        val adjustedPlaybackTime = (currentPlaybackTimeMillis / playbackSpeed).toLong()
+        val calculatedStartTime = currentTime - adjustedPlaybackTime
+
+        val remainingDuration = durationMillis - currentPlaybackTimeMillis
+        val adjustedRemainingDuration = (remainingDuration / playbackSpeed).toLong()
+
         setActivity(
             name = APP_NAME,
             details = song.title,
@@ -19,13 +32,16 @@ class DiscordRPC(
             smallImage = RpcImage.ExternalImage(APP_ICON),
             largeText = song.albumName,
             smallText = song.artistName?.firstOrNull(),
-            buttons = listOf(
-                "Listen on SimpMusic" to "https://simpmusic.org/app/watch?v=${song.videoId}",
-                "Visit SimpMusic" to "https://github.com/maxrave-dev/SimpMusic"
-            ),
+            buttons =
+                listOf(
+                    "Listen on SimpMusic" to "https://simpmusic.org/app/watch?v=${song.videoId}",
+                    "Visit SimpMusic" to "https://github.com/maxrave-dev/SimpMusic",
+                ),
             type = Type.LISTENING,
-            since = Clock.System.now().toEpochMilliseconds(),
-            applicationId = APPLICATION_ID
+            since = currentTime,
+            startTime = calculatedStartTime,
+            endTime = currentTime + adjustedRemainingDuration,
+            applicationId = APPLICATION_ID,
         )
     }
 

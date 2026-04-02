@@ -262,14 +262,16 @@ internal class MediaServiceHandlerImpl(
             player.shuffleModeEnabled = restoredShuffle
             player.repeatMode = restoredRepeatMode
             // Ensure controlState is in sync after restore, regardless of listener callbacks
-            _controlState.value = _controlState.value.copy(
-                isShuffle = restoredShuffle,
-                repeatState = when (restoredRepeatMode) {
-                    PlayerConstants.REPEAT_MODE_ONE -> RepeatState.One
-                    PlayerConstants.REPEAT_MODE_ALL -> RepeatState.All
-                    else -> RepeatState.None
-                },
-            )
+            _controlState.value =
+                _controlState.value.copy(
+                    isShuffle = restoredShuffle,
+                    repeatState =
+                        when (restoredRepeatMode) {
+                            PlayerConstants.REPEAT_MODE_ONE -> RepeatState.One
+                            PlayerConstants.REPEAT_MODE_ALL -> RepeatState.All
+                            else -> RepeatState.None
+                        },
+                )
         }
         mayBeRestoreQueue()
         coroutineScope.launch {
@@ -355,7 +357,12 @@ internal class MediaServiceHandlerImpl(
                         if (it == TRUE && discordRPC == null) {
                             discordRPC = DiscordRPC(dataStoreManager.discordToken.first())
                             nowPlayingState.value.songEntity?.let { song ->
-                                discordRPC?.updateSong(song)
+                                discordRPC?.updateSong(
+                                    getProgress(),
+                                    getPlayerDuration(),
+                                    dataStoreManager.playbackSpeed.first(),
+                                    song,
+                                )
                             }
                         } else if (it == FALSE) {
                             if (discordRPC?.isRpcRunning() == true) {
@@ -693,6 +700,9 @@ internal class MediaServiceHandlerImpl(
                 while (true) {
                     delay(100)
                     _simpleMediaState.value = SimpleMediaState.Progress(player.currentPosition)
+                    nowPlayingState.value.songEntity?.let {
+                        updateDiscordRpc(it)
+                    }
                 }
             }
     }
@@ -2309,7 +2319,12 @@ internal class MediaServiceHandlerImpl(
 
     private fun updateDiscordRpc(song: SongEntity) {
         coroutineScope.launch {
-            discordRPC?.updateSong(song)
+            discordRPC?.updateSong(
+                getProgress(),
+                getPlayerDuration(),
+                dataStoreManager.playbackSpeed.first(),
+                song,
+            )
         }
     }
 
