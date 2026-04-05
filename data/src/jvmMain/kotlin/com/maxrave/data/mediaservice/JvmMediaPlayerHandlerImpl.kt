@@ -66,6 +66,7 @@ import com.my.kizzy.DiscordRPC
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -104,6 +105,7 @@ class JvmMediaPlayerHandlerImpl(
     private val coroutineScope: CoroutineScope,
 ) : MediaPlayerHandler,
     MediaPlayerListener {
+    private val backgroundScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val nypc =
         if (getPlatform() is Platform.Linux) NPYC(getPlatform()) else null
 
@@ -2192,6 +2194,7 @@ class JvmMediaPlayerHandlerImpl(
 
             // Cancel coroutine scope
             coroutineScope.cancel()
+            backgroundScope.cancel()
 
             Logger.w("ServiceHandler", "Handler released successfully. Scope active: ${coroutineScope.isActive}")
         } catch (e: Exception) {
@@ -2348,7 +2351,7 @@ class JvmMediaPlayerHandlerImpl(
     }
 
     private fun updateDiscordRpc(song: SongEntity) {
-        coroutineScope.launch {
+        backgroundScope.launch {
             discordRPC?.updateSong(
                 getProgress(),
                 getPlayerDuration(),

@@ -70,6 +70,7 @@ import com.my.kizzy.DiscordRPC
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -105,6 +106,7 @@ internal class MediaServiceHandlerImpl(
     private val coroutineScope: CoroutineScope,
 ) : MediaPlayerHandler,
     MediaPlayerListener {
+    private val backgroundScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val context: Context = getKoin().get()
     override val player: MediaPlayerInterface = getKoin().get()
 
@@ -357,12 +359,9 @@ internal class MediaServiceHandlerImpl(
                         if (it == TRUE && discordRPC == null) {
                             discordRPC = DiscordRPC(dataStoreManager.discordToken.first())
                             nowPlayingState.value.songEntity?.let { song ->
-                                discordRPC?.updateSong(
-                                    getProgress(),
-                                    getPlayerDuration(),
-                                    dataStoreManager.playbackSpeed.first(),
-                                    song,
-                                )
+                                backgroundScope.launch {
+                                    updateDiscordRpc(song)
+                                }
                             }
                         } else if (it == FALSE) {
                             if (discordRPC?.isRpcRunning() == true) {
@@ -2172,6 +2171,7 @@ internal class MediaServiceHandlerImpl(
 
             // Cancel coroutine scope
             coroutineScope.cancel()
+            backgroundScope.cancel()
 
             Logger.w("ServiceHandler", "Handler released successfully. Scope active: ${coroutineScope.isActive}")
         } catch (e: Exception) {
@@ -2318,7 +2318,7 @@ internal class MediaServiceHandlerImpl(
     }
 
     private fun updateDiscordRpc(song: SongEntity) {
-        coroutineScope.launch {
+        backgroundScope.launch {
             discordRPC?.updateSong(
                 getProgress(),
                 getPlayerDuration(),

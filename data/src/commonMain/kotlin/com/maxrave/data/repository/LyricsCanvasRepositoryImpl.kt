@@ -604,6 +604,7 @@ internal class LyricsCanvasRepositoryImpl(
                         richSyncLyrics = richSyncedLyric,
                         contributor = contributorName,
                         contributorEmail = contributorEmail,
+                        trackType = if (track.thumbnails?.firstOrNull()?.let { it.width == it.height && it.width > 0 } == true) "SONG" else "VIDEO",
                     ),
                 ).onSuccess {
                     Logger.d(simpMusicLyricsTag, "Inserted Lyrics: $it")
