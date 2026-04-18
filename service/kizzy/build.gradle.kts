@@ -8,7 +8,7 @@ plugins {
 }
 
 kotlin {
-    androidLibrary {
+    android {
         namespace = "com.my.kizzy"
         compileSdk = 36
         minSdk = 26
