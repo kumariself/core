@@ -1626,7 +1626,8 @@ internal class CrossfadeExoPlayerAdapter(
      * with a steep transition in the middle — like a real DJ mixer crossfader.
      *
      * k controls steepness: higher = sharper transition.
-     * k=12 gives: 0-20% ≈ 0, 30-70% = steep ramp, 80-100% ≈ 1.
+     * k=6 gives a gentle S-curve: ~8-92% of duration covers the sweep,
+     * keeping a subtle onset/ending without harsh "slam" in the middle.
      */
     private fun sigmoid(
         t: Float,
@@ -2093,7 +2094,7 @@ internal class CrossfadeExoPlayerAdapter(
 
     companion object {
         // DJ crossfade sigmoid steepness (higher = sharper S-curve transition)
-        private const val DJ_FILTER_SIGMOID_K = 12f
+        private const val DJ_FILTER_SIGMOID_K = 6f
 
         // DJ crossfade filter frequency bounds
         private const val LPF_START_HZ = 20000f // Low-pass starts wide open
@@ -2103,7 +2104,7 @@ internal class CrossfadeExoPlayerAdapter(
 
         // AutoMix constants
         private const val AUTO_FALLBACK_DURATION_MS = 25000 // Default when no BPM data
-        private const val AUTO_MIN_DURATION_MS = 10000
+        private const val AUTO_MIN_DURATION_MS = 15000
         private const val AUTO_MAX_DURATION_MS = 40000
         private val BEAT_COUNT_OPTIONS = intArrayOf(16, 32, 48, 64, 80, 96)
         private const val DEFAULT_BEAT_COUNT = 32
