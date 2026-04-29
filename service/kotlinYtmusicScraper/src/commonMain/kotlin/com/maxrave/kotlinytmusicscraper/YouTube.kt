@@ -10,8 +10,6 @@ import com.maxrave.kotlinytmusicscraper.models.ArtistItem
 import com.maxrave.kotlinytmusicscraper.models.BrowseEndpoint
 import com.maxrave.kotlinytmusicscraper.models.GridRenderer
 import com.maxrave.kotlinytmusicscraper.models.MediaType
-import com.maxrave.kotlinytmusicscraper.models.TidalMetadataResult
-import com.maxrave.kotlinytmusicscraper.models.TidalStreamResult
 import com.maxrave.kotlinytmusicscraper.models.MusicCarouselShelfRenderer
 import com.maxrave.kotlinytmusicscraper.models.MusicShelfRenderer
 import com.maxrave.kotlinytmusicscraper.models.MusicTwoRowItemRenderer
@@ -21,6 +19,8 @@ import com.maxrave.kotlinytmusicscraper.models.Run
 import com.maxrave.kotlinytmusicscraper.models.SearchSuggestions
 import com.maxrave.kotlinytmusicscraper.models.SongInfo
 import com.maxrave.kotlinytmusicscraper.models.SongItem
+import com.maxrave.kotlinytmusicscraper.models.TidalMetadataResult
+import com.maxrave.kotlinytmusicscraper.models.TidalStreamResult
 import com.maxrave.kotlinytmusicscraper.models.VideoItem
 import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
 import com.maxrave.kotlinytmusicscraper.models.YTItemType
@@ -48,6 +48,7 @@ import com.maxrave.kotlinytmusicscraper.models.response.SearchResponse
 import com.maxrave.kotlinytmusicscraper.models.response.SimpMusicChartResponse
 import com.maxrave.kotlinytmusicscraper.models.response.TidalSearchResponse
 import com.maxrave.kotlinytmusicscraper.models.response.TidalStreamResponse
+import com.maxrave.kotlinytmusicscraper.models.response.TidalUptimeResponse
 import com.maxrave.kotlinytmusicscraper.models.response.toLikeStatus
 import com.maxrave.kotlinytmusicscraper.models.response.toListAccountInfo
 import com.maxrave.kotlinytmusicscraper.models.simpmusic.FdroidResponse
@@ -97,6 +98,8 @@ import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.daysUntil
 import kotlinx.datetime.toLocalDateTime
@@ -124,8 +127,22 @@ private const val TAG = "YouTubeScraper"
  * Using YouTube Internal API
  * @author maxrave-dev
  */
+
+/**
+ * Resolved Tidal-like endpoints. Either field may be null if the dynamic uptime lookup
+ * found no working server. Callers must skip the Tidal call when their needed URL is null.
+ */
+data class TidalEndpoints(
+    val streamingUrl: String?,
+    val metadataUrl: String?,
+)
+
 class YouTube {
     private val ytMusic = Ytmusic()
+
+    private val tidalUptimeMutex = Mutex()
+    private var tidalUptimeCache: TidalUptimeResponse? = null
+    private var tidalUptimeFetchedAt: Long = 0L
 
     var cookiePath: Path?
         get() = ytMusic.cookiePath
@@ -1873,6 +1890,45 @@ class YouTube {
             ytMusic.getSimpMusicChart().body<SimpMusicChartResponse>()
         }
 
+    /**
+     * Resolve Tidal-like endpoints dynamically from the uptime worker, with a TTL cache.
+     *
+     * Selection rules:
+     * - When [userOverride] is non-blank: skip dynamic lookup and use it as both stream + metadata URL.
+     * - Otherwise: streaming URL = first entry of `streaming` list (null if empty).
+     *   Metadata URL = first entry of `streaming` list, falling back to first entry of `api` list.
+     * - If both are empty (and no override), the caller should skip the Tidal call entirely.
+     */
+    suspend fun getTidalEndpoints(userOverride: String? = null): TidalEndpoints {
+        if (!userOverride.isNullOrBlank()) {
+            val trimmed = userOverride.removeSuffix("/")
+            return TidalEndpoints(streamingUrl = trimmed, metadataUrl = trimmed)
+        }
+        val nowMs = Clock.System.now().toEpochMilliseconds()
+        tidalUptimeMutex.withLock {
+            val cached = tidalUptimeCache
+            if (cached == null || (nowMs - tidalUptimeFetchedAt) > TIDAL_UPTIME_TTL_MS) {
+                val fresh =
+                    runCatching {
+                        ytMusic.getTidalUptime().body<TidalUptimeResponse>()
+                    }.onFailure {
+                        Logger.e("Stream", "Tidal uptime fetch failed: ${it.message}", it)
+                    }.getOrNull()
+                if (fresh != null) {
+                    tidalUptimeCache = fresh
+                    tidalUptimeFetchedAt = nowMs
+                }
+            }
+        }
+        val snapshot = tidalUptimeCache
+        val streamingUrl = snapshot?.streaming?.firstOrNull()?.url
+        val apiUrl = snapshot?.api?.firstOrNull()?.url
+        return TidalEndpoints(
+            streamingUrl = streamingUrl,
+            metadataUrl = streamingUrl ?: apiUrl,
+        )
+    }
+
     suspend fun getTidalStream(
         url: String,
         query: String,
@@ -1975,44 +2031,49 @@ class YouTube {
                             ?.toIntOrNull()
                     val audioUrl =
                         if (should320kbps.first && !isVideo && durationSecond != null) {
-                            val your320kbpsUrl = should320kbps.second
-                            Logger.d("Stream", "Prefer 320kbps enabled ${playerResponse.second.videoDetails}")
-                            val title = playerResponse.second.videoDetails?.title ?: ""
-                            val author = playerResponse.second.videoDetails?.author ?: ""
-                            val q =
-                                "$title $author"
-                                    .replace(
-                                        Regex("\\((feat\\.|ft.|cùng với|con|mukana|com|avec|合作音乐人: ) "),
-                                        " ",
-                                    ).replace(
-                                        Regex("( và | & | и | e | und |, |和| dan)"),
-                                        " ",
-                                    ).replace("  ", " ")
-                                    .replace(Regex("([()])"), "")
-                                    .replace(".", " ")
-                                    .replace("  ", " ")
-                            Logger.d("Stream", "Search query for 320kbps: $q")
-                            val res =
-                                getTidalStream(your320kbpsUrl, q, durationSecond)
-                                    .apply {
-                                        onSuccess {
-                                            Logger.w("Stream", "Tidal response: $this")
-                                        }.onFailure {
-                                            Logger.e("Stream", "Tidal error: ${it.message}", it)
-                                        }
-                                    }.getOrNull()
-                            val audioData =
-                                res
-                                    ?.stream
-                                    ?.data
-                                    ?.manifest
-                                    ?.decodeTidalManifest()
-                            if (audioData != null) {
-                                Logger.d("Stream", "Found potential 320kbps stream from Tidal: $res")
-                                audioData.urls.firstOrNull() ?: audioFormat?.url
-                            } else {
-                                Logger.d("Stream", "Found potential 320kbps stream from Tidal manifest DASH: ${res?.stream?.data?.manifest}")
+                            val streamingUrl = getTidalEndpoints(should320kbps.second).streamingUrl
+                            if (streamingUrl == null) {
+                                Logger.d("Stream", "No working Tidal streaming endpoint, falling back to YouTube audio")
                                 audioFormat?.url
+                            } else {
+                                Logger.d("Stream", "Prefer 320kbps enabled ${playerResponse.second.videoDetails}")
+                                val title = playerResponse.second.videoDetails?.title ?: ""
+                                val author = playerResponse.second.videoDetails?.author ?: ""
+                                val q =
+                                    "$title $author"
+                                        .replace(
+                                            Regex("\\((feat\\.|ft.|cùng với|con|mukana|com|avec|合作音乐人: ) "),
+                                            " ",
+                                        ).replace(
+                                            Regex("( và | & | и | e | und |, |和| dan)"),
+                                            " ",
+                                        ).replace("  ", " ")
+                                        .replace(Regex("([()])"), "")
+                                        .replace(".", " ")
+                                        .replace("  ", " ")
+                                Logger.d("Stream", "Search query for 320kbps: $q")
+                                val res =
+                                    getTidalStream(streamingUrl, q, durationSecond)
+                                        .apply {
+                                            onSuccess {
+                                                Logger.w("Stream", "Tidal response: $this")
+                                            }.onFailure {
+                                                Logger.e("Stream", "Tidal error: ${it.message}", it)
+                                            }
+                                        }.getOrNull()
+                                val audioData =
+                                    res
+                                        ?.stream
+                                        ?.data
+                                        ?.manifest
+                                        ?.decodeTidalManifest()
+                                if (audioData != null) {
+                                    Logger.d("Stream", "Found potential 320kbps stream from Tidal: $res")
+                                    audioData.urls.firstOrNull() ?: audioFormat?.url
+                                } else {
+                                    Logger.d("Stream", "Found potential 320kbps stream from Tidal manifest DASH: ${res?.stream?.data?.manifest}")
+                                    audioFormat?.url
+                                }
                             }
                         } else {
                             audioFormat?.url
@@ -2092,5 +2153,8 @@ class YouTube {
         private const val VISITOR_DATA_PREFIX = "Cgt"
 
         const val DEFAULT_VISITOR_DATA = "CgtsZG1ySnZiQWtSbyiMjuGSBg%3D%3D"
+
+        // Tidal uptime cache TTL: 10 minutes
+        private const val TIDAL_UPTIME_TTL_MS = 5 * 60 * 1000L
     }
 }

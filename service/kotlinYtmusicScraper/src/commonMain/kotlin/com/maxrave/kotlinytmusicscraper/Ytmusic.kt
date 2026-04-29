@@ -1176,6 +1176,16 @@ class Ytmusic {
         parameter("id", tidalId)
         parameter("quality", "HIGH")
     }
+
+    suspend fun getTidalUptime() =
+        httpClient.get(TIDAL_UPTIME_URL) {
+            header("accept", "*/*")
+            header("origin", "https://monochrome.tf")
+        }
+
+    companion object {
+        const val TIDAL_UPTIME_URL = "https://tidal-uptime.jiffy-puffs-1j.workers.dev/"
+    }
 }
 
 expect fun getCountry(): String

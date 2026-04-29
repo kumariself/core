@@ -360,10 +360,7 @@ internal class SongRepositoryImpl(
                 path,
                 videoId,
                 runBlocking {
-                    (
-                        dataStoreManager.prefer320kbpsStream.first() == TRUE &&
-                            dataStoreManager.your320kbpsUrl.first().isNotEmpty()
-                    ) to
+                    (dataStoreManager.prefer320kbpsStream.first() == TRUE) to
                         dataStoreManager.your320kbpsUrl.first()
                 },
                 isVideo,
