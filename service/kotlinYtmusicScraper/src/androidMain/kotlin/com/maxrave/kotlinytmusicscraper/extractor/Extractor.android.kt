@@ -9,6 +9,7 @@ import okio.FileSystem
 import okio.IOException
 import okio.Path.Companion.toPath
 import org.schabi.newpipe.extractor.NewPipe
+import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.stream.StreamInfo
 
 private const val TAG = "Extractor"
@@ -20,8 +21,12 @@ actual class Extractor {
         NewPipe.init(newPipeDownloader)
     }
 
+    actual fun logIn(cookie: String?) {
+        ServiceList.YouTube.tokens = cookie ?: ""
+    }
+
     actual fun newPipePlayer(videoId: String): List<Pair<Int, String>> {
-        val streamInfo = StreamInfo.getInfo(NewPipe.getService(0), "https://www.youtube.com/watch?v=$videoId")
+        val streamInfo = StreamInfo.getInfo(ServiceList.YouTube, "https://music.youtube.com/watch?v=$videoId")
         val streamsList = streamInfo.audioStreams + streamInfo.videoStreams + streamInfo.videoOnlyStreams
         return streamsList.mapNotNull {
             (it.itagItem?.id ?: return@mapNotNull null) to it.content

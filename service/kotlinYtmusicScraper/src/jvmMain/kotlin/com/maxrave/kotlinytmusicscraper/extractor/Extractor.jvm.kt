@@ -3,6 +3,7 @@ package com.maxrave.kotlinytmusicscraper.extractor
 import com.maxrave.kotlinytmusicscraper.models.SongItem
 import com.maxrave.kotlinytmusicscraper.models.response.DownloadProgress
 import org.schabi.newpipe.extractor.NewPipe
+import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.stream.StreamInfo
 
 actual class Extractor {
@@ -12,8 +13,12 @@ actual class Extractor {
         NewPipe.init(newPipeDownloader)
     }
 
+    actual fun logIn(cookie: String?) {
+        ServiceList.YouTube.tokens = cookie ?: ""
+    }
+
     actual fun newPipePlayer(videoId: String): List<Pair<Int, String>> {
-        val streamInfo = StreamInfo.getInfo(NewPipe.getService(0), "https://www.youtube.com/watch?v=$videoId")
+        val streamInfo = StreamInfo.getInfo(ServiceList.YouTube, "https://music.youtube.com/watch?v=$videoId")
         val streamsList = streamInfo.audioStreams + streamInfo.videoStreams + streamInfo.videoOnlyStreams
         val temp =
             streamsList

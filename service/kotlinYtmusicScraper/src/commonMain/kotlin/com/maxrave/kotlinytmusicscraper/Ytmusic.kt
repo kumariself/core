@@ -119,6 +119,7 @@ class Ytmusic {
         set(value) {
             field = value
             cookieMap = if (value == null) emptyMap() else parseCookieString(value)
+            extractor.logIn(value)
         }
 
     var pageId: String? = null
