@@ -147,8 +147,11 @@ internal class StreamRepositoryImpl(
                             ?: formatList.find { it.itag == 134 }
                             ?: formatList.find { !it.isAudio && it.url.isNullOrEmpty().not() }
                     val audioFormat =
-                        formatList.find { it.itag == itag } ?: formatList.find { it.itag == 141 }
-                            ?: formatList.find { it.isAudio && it.url.isNullOrEmpty().not() }
+                        formatList.find { it.itag == itag } ?: if (itag == 774) {
+                            formatList.find { it.itag == 141 }
+                        } else {
+                            formatList.find { it.isAudio && it.url.isNullOrEmpty().not() }
+                        }
                     var format =
                         if (isVideo) {
                             videoFormat
