@@ -39,11 +39,19 @@ actual class Extractor {
                 streamsList.mapNotNull {
                     (it.itagItem?.id ?: return@mapNotNull null) to it.content
                 }
-            if (pipeResult.hasRequiredItags()) return pipeResult
-            Logger.d(
-                TAG,
-                "PipePipe missing required itags for $videoId (got=${pipeResult.map { it.first }}), falling back to BravePipe",
-            )
+            if (!pipeResult.hasRequiredItags()) {
+                Logger.d(
+                    TAG,
+                    "PipePipe missing required itags for $videoId (got=${pipeResult.map { it.first }}), falling back to BravePipe",
+                )
+            } else if (!pipeResult.headCheckRandomStream()) {
+                Logger.d(
+                    TAG,
+                    "PipePipe stream URL HEAD check failed (non 2xx) for $videoId, falling back to BravePipe",
+                )
+            } else {
+                return pipeResult
+            }
         } catch (e: Throwable) {
             Logger.w(TAG, "PipePipe extractor failed for $videoId: ${e.message}, falling back to BravePipe")
         }

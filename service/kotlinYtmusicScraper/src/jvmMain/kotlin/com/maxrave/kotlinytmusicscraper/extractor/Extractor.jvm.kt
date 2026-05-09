@@ -38,11 +38,19 @@ actual class Extractor {
             val manifest = streamInfo.dashMpdUrl.takeIf { !it.isNullOrEmpty() } ?: streamInfo.hlsUrl
             if (!manifest.isNullOrEmpty()) temp.add(96 to manifest)
             val pipeResult = temp.toList()
-            if (pipeResult.hasRequiredItags()) return pipeResult
-            Logger.d(
-                TAG,
-                "PipePipe missing required itags for $videoId (got=${pipeResult.map { it.first }}), falling back to BravePipe",
-            )
+            if (!pipeResult.hasRequiredItags()) {
+                Logger.d(
+                    TAG,
+                    "PipePipe missing required itags for $videoId (got=${pipeResult.map { it.first }}), falling back to BravePipe",
+                )
+            } else if (!pipeResult.headCheckRandomStream()) {
+                Logger.d(
+                    TAG,
+                    "PipePipe stream URL HEAD check failed (non 2xx) for $videoId, falling back to BravePipe",
+                )
+            } else {
+                return pipeResult
+            }
         } catch (e: Throwable) {
             Logger.w(TAG, "PipePipe extractor failed for $videoId: ${e.message}, falling back to BravePipe")
         }

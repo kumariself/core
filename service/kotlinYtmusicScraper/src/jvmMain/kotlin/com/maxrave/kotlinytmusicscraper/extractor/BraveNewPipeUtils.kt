@@ -20,6 +20,34 @@ internal fun List<Pair<Int, String>>.hasRequiredItags(): Boolean {
     return hasAudio && hasVideo
 }
 
+private val streamHealthCheckClient: OkHttpClient by lazy {
+    OkHttpClient
+        .Builder()
+        .build()
+}
+
+/**
+ * Pick one random URL whose itag belongs to [REQUIRED_AUDIO_ITAGS] or [REQUIRED_VIDEO_ITAGS] and
+ * HEAD it. Returns true only when the response code is in the 200..299 range. We only health-check
+ * required-itag URLs because those are the ones the player will actually use; lower-quality
+ * extras can stay unverified.
+ */
+internal fun List<Pair<Int, String>>.headCheckRandomStream(): Boolean {
+    val required = REQUIRED_AUDIO_ITAGS + REQUIRED_VIDEO_ITAGS
+    val candidate = this.filter { it.first in required }.randomOrNull() ?: return false
+    return runCatching {
+        val request =
+            okhttp3.Request
+                .Builder()
+                .head()
+                .url(candidate.second)
+                .build()
+        streamHealthCheckClient.newCall(request).execute().use { response ->
+            response.code in 200..299
+        }
+    }.getOrDefault(false)
+}
+
 class BraveNewPipeDownloaderImpl(
     proxy: Proxy?,
 ) : Downloader() {

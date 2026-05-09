@@ -124,9 +124,8 @@ kotlin {
 
 // PipePipe brings com.google.protobuf:protobuf-java (full) while Brave brings
 // com.google.protobuf:protobuf-javalite. Both occupy the com.google.protobuf.* namespace and
-// trigger DEX duplicate-class failures. Drop the full variant globally so Brave's javalite wins
-// and both extractors can coexist. wire-runtime and nanojson use the same group:module across
-// both libs so Gradle's normal version conflict resolution handles them automatically.
+// trigger DEX duplicate-class failures. Drop the full variant globally so Brave's javalite wins.
+// nanojson force is in the root build.gradle.kts so it propagates to the final APK classpath.
 configurations.all {
     exclude(group = "com.google.protobuf", module = "protobuf-java")
 }
