@@ -166,11 +166,11 @@ object SUPPORTED_LANGUAGE {
             "Português",
             "Français",
             "Español",
-            "简体中文",
+            "简体中文 (Simplified Chinese)",
             "Bahasa Indonesia",
             "اللغة العربية",
             "日本語",
-            "繁體中文",
+            "繁體中文 (Traditional Chinese)",
             "Українська",
             "עברית",
             "Azerbaijani",
@@ -213,12 +213,19 @@ object SUPPORTED_LANGUAGE {
         )
 
     fun getLanguageFromCode(code: String?): String {
-        val index = codes.indexOf(code)
-        Logger.d("Config", "getLanguageFromCode: $index")
+        val index =
+            codes.indexOf(
+                if (code == "he-IL") {
+                    "iw-IL"
+                } else {
+                    code
+                },
+            )
+        Logger.d("Config", "getLanguageFromCode: $code")
+        Logger.w("Config", "getLanguageFromCode: ${items.getOrNull(index)}")
         if (index == -1) {
             return "English"
         }
-        Logger.w("Config", "getLanguageFromCode: ${items.get(index)}")
         return (items.getOrNull(index) ?: "English").toString()
     }
 
