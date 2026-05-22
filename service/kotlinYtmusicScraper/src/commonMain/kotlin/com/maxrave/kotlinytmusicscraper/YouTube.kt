@@ -143,6 +143,12 @@ class YouTube {
     private var tidalUptimeCache: TidalUptimeResponse? = null
     private var tidalUptimeFetchedAt: Long = 0L
 
+    // Fallback selection (used only when the uptime worker is unreachable).
+    // Caches the first hard-coded URL that responds to a liveness probe so we don't
+    // re-probe on every getTidalEndpoints call. Shares the uptime TTL for consistency.
+    private var tidalFallbackChosenUrl: String? = null
+    private var tidalFallbackChosenAt: Long = 0L
+
     var cookiePath: Path?
         get() = ytMusic.cookiePath
         set(value) {
@@ -1890,13 +1896,17 @@ class YouTube {
         }
 
     /**
-     * Resolve Tidal-like endpoints dynamically from the uptime worker, with a TTL cache.
+     * Resolve Tidal-like endpoints from the hard-coded [TIDAL_FALLBACK_URLS] priority list.
      *
      * Selection rules:
-     * - When [userOverride] is non-blank: skip dynamic lookup and use it as both stream + metadata URL.
-     * - Otherwise: streaming URL = first entry of `streaming` list (null if empty).
-     *   Metadata URL = first entry of `streaming` list, falling back to first entry of `api` list.
-     * - If both are empty (and no override), the caller should skip the Tidal call entirely.
+     * - When [userOverride] is non-blank: skip the lookup and use it as both stream + metadata URL.
+     * - Otherwise: probe each URL in priority order, pick the first reachable one,
+     *   and cache it for [TIDAL_UPTIME_TTL_MS]. If every probe fails, returns the top
+     *   priority URL anyway as a last resort.
+     *
+     * Note: The previous dynamic uptime-worker lookup (tidal-uptime.jiffy-puffs-1j.workers.dev)
+     * has been removed because the worker is permanently dead. Hard-coded list is the
+     * source of truth — update [TIDAL_FALLBACK_URLS] when instances change.
      */
     suspend fun getTidalEndpoints(userOverride: String? = null): TidalEndpoints {
         if (!userOverride.isNullOrBlank()) {
@@ -1904,29 +1914,42 @@ class YouTube {
             return TidalEndpoints(streamingUrl = trimmed, metadataUrl = trimmed)
         }
         val nowMs = Clock.System.now().toEpochMilliseconds()
-        tidalUptimeMutex.withLock {
-            val cached = tidalUptimeCache
-            if (cached == null || (nowMs - tidalUptimeFetchedAt) > TIDAL_UPTIME_TTL_MS) {
-                val fresh =
-                    runCatching {
-                        ytMusic.getTidalUptime().body<TidalUptimeResponse>()
-                    }.onFailure {
-                        Logger.e("Stream", "Tidal uptime fetch failed: ${it.message}", it)
-                    }.getOrNull()
-                if (fresh != null) {
-                    tidalUptimeCache = fresh
-                    tidalUptimeFetchedAt = nowMs
-                }
-            }
-        }
-        val snapshot = tidalUptimeCache
-        val streamingUrl = snapshot?.streaming?.firstOrNull()?.url
-        val apiUrl = snapshot?.api?.firstOrNull()?.url
+        val resolved = resolveTidalFallbackUrl(nowMs)
         return TidalEndpoints(
-            streamingUrl = streamingUrl,
-            metadataUrl = streamingUrl ?: apiUrl,
+            streamingUrl = resolved,
+            metadataUrl = resolved,
         )
     }
+
+    /**
+     * Resolve a working Tidal-like instance from [TIDAL_FALLBACK_URLS] when the uptime
+     * worker is unreachable. Probes each candidate sequentially in priority order
+     * (top of list first) and caches the first reachable one for [TIDAL_UPTIME_TTL_MS].
+     *
+     * If every candidate fails the liveness probe, returns the top-priority URL anyway
+     * as a last-resort — the caller's runCatching wraps any subsequent failure.
+     */
+    private suspend fun resolveTidalFallbackUrl(nowMs: Long): String =
+        tidalUptimeMutex.withLock {
+            val cached = tidalFallbackChosenUrl
+            if (cached != null && (nowMs - tidalFallbackChosenAt) <= TIDAL_UPTIME_TTL_MS) {
+                return@withLock cached
+            }
+            var chosen: String? = null
+            for (candidate in TIDAL_FALLBACK_URLS) {
+                if (ytMusic.probeTidalInstance(candidate)) {
+                    Logger.d("Stream", "Tidal fallback probe OK: $candidate")
+                    chosen = candidate
+                    break
+                } else {
+                    Logger.w("Stream", "Tidal fallback probe FAILED: $candidate")
+                }
+            }
+            val result = chosen ?: TIDAL_FALLBACK_URLS.first()
+            tidalFallbackChosenUrl = result
+            tidalFallbackChosenAt = nowMs
+            result
+        }
 
     suspend fun getTidalStream(
         url: String,
@@ -2103,5 +2126,16 @@ class YouTube {
 
         // Tidal uptime cache TTL: 10 minutes
         private const val TIDAL_UPTIME_TTL_MS = 5 * 60 * 1000L
+
+        // Hard-coded Tidal-like instances used when the uptime worker is unreachable.
+        // Ordered by priority (top = most preferred). We probe each sequentially and
+        // pick the first one that responds, then cache the choice for [TIDAL_UPTIME_TTL_MS].
+        private val TIDAL_FALLBACK_URLS =
+            listOf(
+                "https://hifi.geeked.wtf",
+                "https://eu-central.monochrome.tf",
+                "https://us-west.monochrome.tf",
+                "https://api.monochrome.tf",
+            )
     }
 }

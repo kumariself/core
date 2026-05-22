@@ -61,6 +61,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
 import kotlinx.io.readByteArray
@@ -1184,8 +1185,31 @@ class Ytmusic {
             header("origin", "https://monochrome.tf")
         }
 
+    /**
+     * Lightweight liveness probe for a Tidal-like instance. Used by the YouTube layer's
+     * fallback chain when the uptime worker is unreachable — picks the first reachable
+     * instance from a hard-coded priority list.
+     *
+     * Uses `/search` with a throwaway query because every Tidal-like server we target
+     * implements that endpoint. Timeout is bounded so a dead instance can't stall the
+     * whole fallback chain.
+     */
+    suspend fun probeTidalInstance(url: String): Boolean =
+        withTimeoutOrNull(TIDAL_PROBE_TIMEOUT_MS) {
+            runCatching {
+                httpClient
+                    .get("$url/search") {
+                        contentType(ContentType.Application.Json)
+                        header("accept", "*/*")
+                        parameter("s", "probe")
+                    }.status
+                    .value in 200..299
+            }.getOrDefault(false)
+        } ?: false
+
     companion object {
         const val TIDAL_UPTIME_URL = "https://tidal-uptime.jiffy-puffs-1j.workers.dev/"
+        private const val TIDAL_PROBE_TIMEOUT_MS = 2000L
     }
 }
 
