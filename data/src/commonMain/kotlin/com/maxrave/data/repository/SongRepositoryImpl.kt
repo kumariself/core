@@ -54,9 +54,12 @@ internal class SongRepositoryImpl(
 
     override fun getSongsByListVideoId(listVideoId: List<String>): Flow<List<SongEntity>> =
         flow {
-            emit(
-                localDataSource.getSongByListVideoIdFull(listVideoId),
-            )
+            // SQLite's `WHERE videoId IN (:list)` does NOT preserve the input list order
+            // (it returns rows in table/rowid order). Album tracks, local playlist items,
+            // and queue snapshots all rely on caller-defined order, so we restore it here.
+            val songs = localDataSource.getSongByListVideoIdFull(listVideoId)
+            val byId = songs.associateBy { it.videoId }
+            emit(listVideoId.mapNotNull { byId[it] })
         }.flowOn(Dispatchers.IO)
 
     override fun getDownloadedSongs(): Flow<List<SongEntity>?> =
