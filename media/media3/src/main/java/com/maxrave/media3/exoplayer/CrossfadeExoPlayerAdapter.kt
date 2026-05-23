@@ -2184,8 +2184,8 @@ internal class CrossfadeExoPlayerAdapter(
         private const val AUTO_MAX_DURATION_MS = 45000
         private val BEAT_COUNT_OPTIONS = intArrayOf(16, 32, 48, 64, 80, 96)
         private const val DEFAULT_BEAT_COUNT = 32
-        private const val BPM_RATIO_MIN = 0.5f // Max 50% slower
-        private const val BPM_RATIO_MAX = 1.5f // Max 50% faster
+        private const val BPM_RATIO_MIN = 0.75f // Max 25% slower
+        private const val BPM_RATIO_MAX = 1.25f // Max 25% faster
 
         // Quantization step for speed/pitch ramp (0.5% = 0.005)
         // Prevents SonicAudioProcessor from popping on micro-adjustments
@@ -2196,7 +2196,6 @@ internal class CrossfadeExoPlayerAdapter(
         // crossfade and then holds, so the remainder of the blend plays at matched
         // BPM (DJ-style beat alignment). 0.2 = ramp completes in first 20% of crossfade.
         private const val BPM_RAMP_PORTION = 0.2f
-
     }
 
     /**
