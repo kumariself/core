@@ -101,14 +101,13 @@ class AiService(
                             "\n" +
                             "TASK:\n" +
                             "- You will receive a JSON object where keys are line indices and values are lyrics text.\n" +
-                            "- Translate ONLY the values to the target language.\n" +
-                            "- Keep ALL keys exactly the same.\n" +
-                            "- The output MUST have the EXACT same number of entries as the input.\n" +
-                            "- Do NOT merge, split, add, or remove any entries.\n" +
-                            "- Preserve the song's meaning, tone, and emotion in the translation.\n" +
+                            "- FIRST, detect the dominant language of the input lyrics.\n" +
+                            "- If the detected language is the SAME as the target language code, return an EMPTY \"translations\" object. Do NOT translate. Do NOT paraphrase.\n" +
+                            "- Otherwise, translate ONLY the values to the target language.\n" +
+                            "- When translating: keep ALL keys exactly the same, output MUST have the EXACT same number of entries as the input, do NOT merge/split/add/remove any entries, and preserve the song's meaning, tone, and emotion.\n" +
                             "\n" +
                             "OUTPUT:\n" +
-                            "- A JSON object with the \"translations\" field containing the same keys mapped to translated values."
+                            "- A JSON object with the \"translations\" field containing the same keys mapped to translated values (or an empty object when the input is already in the target language)."
                     }
                     user {
                         content {
@@ -136,6 +135,11 @@ class AiService(
         val cleanedJson = jsonData.replace("```json", "").replace("```", "")
         val translationResponse = json.decodeFromString<TranslationResponse>(cleanedJson)
         val translatedMap = translationResponse.translations
+        if (translatedMap.isEmpty()) {
+            throw IllegalStateException(
+                "Input lyrics are already in the target language ($targetLanguage). Translation aborted.",
+            )
+        }
 
         // Map translated text back to original lines, preserving all timestamps
         val translatedLines = lines.mapIndexed { index, originalLine ->
@@ -192,7 +196,7 @@ class AiService(
 
 @kotlinx.serialization.Serializable
 data class TranslationResponse(
-    val translations: Map<String, String>,
+    val translations: Map<String, String> = emptyMap(),
 )
 
 enum class AIHost {
