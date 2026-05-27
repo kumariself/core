@@ -1287,10 +1287,10 @@ class VlcPlayerAdapter(
                         cachedBufferedPosition = (cachedDuration * newCache / 100f).toLong()
                     }
 
-                    // Only report loading when buffer is actually behind the playhead.
-                    // VLC fires buffering(<100%) during normal refills even when
-                    // there's plenty of data ahead — that's not a stall.
-                    val isStalled = newCache < 100f && cachedBufferedPosition <= cachedPosition
+                    // Only report loading when buffer is actually behind the playhead
+                    // AND the player intends to play. Ignore buffering while paused
+                    // to avoid showing a loading spinner when user has explicitly paused.
+                    val isStalled = newCache < 100f && cachedBufferedPosition <= cachedPosition && internalPlayWhenReady
                     Logger.d(
                         TAG,
                         "buffering: cache=$newCache%, bufferedPos=$cachedBufferedPosition, currentPos=$cachedPosition, isStalled=$isStalled, cachedIsLoading=$cachedIsLoading",
