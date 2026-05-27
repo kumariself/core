@@ -20,7 +20,6 @@ import com.maxrave.kotlinytmusicscraper.models.SearchSuggestions
 import com.maxrave.kotlinytmusicscraper.models.SongInfo
 import com.maxrave.kotlinytmusicscraper.models.SongItem
 import com.maxrave.kotlinytmusicscraper.models.TidalMetadataResult
-import com.maxrave.kotlinytmusicscraper.models.TidalStreamResult
 import com.maxrave.kotlinytmusicscraper.models.VideoItem
 import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
 import com.maxrave.kotlinytmusicscraper.models.YTItemType
@@ -47,8 +46,7 @@ import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
 import com.maxrave.kotlinytmusicscraper.models.response.SearchResponse
 import com.maxrave.kotlinytmusicscraper.models.response.SimpMusicChartResponse
 import com.maxrave.kotlinytmusicscraper.models.response.TidalSearchResponse
-import com.maxrave.kotlinytmusicscraper.models.response.TidalStreamResponse
-import com.maxrave.kotlinytmusicscraper.models.response.TidalUptimeResponse
+import com.maxrave.kotlinytmusicscraper.models.response.TidalOAuthResponse
 import com.maxrave.kotlinytmusicscraper.models.response.toLikeStatus
 import com.maxrave.kotlinytmusicscraper.models.response.toListAccountInfo
 import com.maxrave.kotlinytmusicscraper.models.simpmusic.FdroidResponse
@@ -127,27 +125,12 @@ private const val TAG = "YouTubeScraper"
  * @author maxrave-dev
  */
 
-/**
- * Resolved Tidal-like endpoints. Either field may be null if the dynamic uptime lookup
- * found no working server. Callers must skip the Tidal call when their needed URL is null.
- */
-data class TidalEndpoints(
-    val streamingUrl: String?,
-    val metadataUrl: String?,
-)
-
 class YouTube {
     private val ytMusic = Ytmusic()
 
-    private val tidalUptimeMutex = Mutex()
-    private var tidalUptimeCache: TidalUptimeResponse? = null
-    private var tidalUptimeFetchedAt: Long = 0L
-
-    // Fallback selection (used only when the uptime worker is unreachable).
-    // Caches the first hard-coded URL that responds to a liveness probe so we don't
-    // re-probe on every getTidalEndpoints call. Shares the uptime TTL for consistency.
-    private var tidalFallbackChosenUrl: String? = null
-    private var tidalFallbackChosenAt: Long = 0L
+    private val tidalTokenMutex = Mutex()
+    private var tidalAccessToken: String? = null
+    private var tidalTokenExpiresAt: Long = 0L
 
     var cookiePath: Path?
         get() = ytMusic.cookiePath
@@ -1896,103 +1879,44 @@ class YouTube {
         }
 
     /**
-     * Resolve Tidal-like endpoints from the hard-coded [TIDAL_FALLBACK_URLS] priority list.
-     *
-     * Selection rules:
-     * - When [userOverride] is non-blank: skip the lookup and use it as both stream + metadata URL.
-     * - Otherwise: probe each URL in priority order, pick the first reachable one,
-     *   and cache it for [TIDAL_UPTIME_TTL_MS]. If every probe fails, returns the top
-     *   priority URL anyway as a last resort.
-     *
-     * Note: The previous dynamic uptime-worker lookup (tidal-uptime.jiffy-puffs-1j.workers.dev)
-     * has been removed because the worker is permanently dead. Hard-coded list is the
-     * source of truth — update [TIDAL_FALLBACK_URLS] when instances change.
+     * Ensure a valid Tidal OAuth token is available, refreshing if expired.
+     * In-memory only — token is re-fetched on each app launch (follows Spotify auth pattern).
      */
-    suspend fun getTidalEndpoints(userOverride: String? = null): TidalEndpoints {
-        if (!userOverride.isNullOrBlank()) {
-            val trimmed = userOverride.removeSuffix("/")
-            return TidalEndpoints(streamingUrl = trimmed, metadataUrl = trimmed)
-        }
-        val nowMs = Clock.System.now().toEpochMilliseconds()
-        val resolved = resolveTidalFallbackUrl(nowMs)
-        return TidalEndpoints(
-            streamingUrl = resolved,
-            metadataUrl = resolved,
-        )
-    }
+    private suspend fun ensureTidalToken(): String =
+        tidalTokenMutex.withLock {
+            val now = Clock.System.now().toEpochMilliseconds()
+            val cached = tidalAccessToken
+            if (cached != null && now < tidalTokenExpiresAt) return@withLock cached
 
-    /**
-     * Resolve a working Tidal-like instance from [TIDAL_FALLBACK_URLS] when the uptime
-     * worker is unreachable. Probes each candidate sequentially in priority order
-     * (top of list first) and caches the first reachable one for [TIDAL_UPTIME_TTL_MS].
-     *
-     * If every candidate fails the liveness probe, returns the top-priority URL anyway
-     * as a last-resort — the caller's runCatching wraps any subsequent failure.
-     */
-    private suspend fun resolveTidalFallbackUrl(nowMs: Long): String =
-        tidalUptimeMutex.withLock {
-            val cached = tidalFallbackChosenUrl
-            if (cached != null && (nowMs - tidalFallbackChosenAt) <= TIDAL_UPTIME_TTL_MS) {
-                return@withLock cached
-            }
-            var chosen: String? = null
-            for (candidate in TIDAL_FALLBACK_URLS) {
-                if (ytMusic.probeTidalInstance(candidate)) {
-                    Logger.d("Stream", "Tidal fallback probe OK: $candidate")
-                    chosen = candidate
-                    break
-                } else {
-                    Logger.w("Stream", "Tidal fallback probe FAILED: $candidate")
-                }
-            }
-            val result = chosen ?: TIDAL_FALLBACK_URLS.first()
-            tidalFallbackChosenUrl = result
-            tidalFallbackChosenAt = nowMs
-            result
+            val response = ytMusic.getTidalOAuthToken().body<TidalOAuthResponse>()
+            tidalAccessToken = response.accessToken
+            tidalTokenExpiresAt = now + (response.expiresIn * 1000L) - 60_000L
+            Logger.d("Stream", "Tidal OAuth token refreshed, expires in ${response.expiresIn}s")
+            response.accessToken
         }
 
-    suspend fun getTidalStream(
-        url: String,
-        query: String,
-        durationSeconds: Int,
-    ) = runCatching {
-        val searchRes = ytMusic.searchTidalId(url, query).body<TidalSearchResponse>()
-        val firstRes = searchRes.data?.items?.firstOrNull { it?.duration?.let { dur -> abs(dur - durationSeconds) <= 1 } ?: false }
-        val matchedItem =
-            firstRes ?: searchRes.data
-                ?.items
-                ?.filter { it?.duration?.let { dur -> abs(dur - durationSeconds) <= 1 } ?: false }
-                ?.minByOrNull { abs((it?.duration ?: 0) - durationSeconds) }
-        val trackId = matchedItem?.id ?: throw Exception("No matching track found")
-        val streamRes = ytMusic.getTidalStream(url, "$trackId").body<TidalStreamResponse>()
-        TidalStreamResult(
-            stream = streamRes,
-            bpm = matchedItem.bpm,
-            musicKey = matchedItem.key,
-            keyScale = matchedItem.keyScale,
-        )
-    }
-
     /**
-     * Search Tidal for metadata only (bpm, key, keyScale) without fetching the stream.
+     * Search Tidal official API for metadata (bpm, key, keyScale).
+     * Token is managed in-memory and auto-refreshed when expired.
      */
     suspend fun searchTidalMetadata(
-        url: String,
         query: String,
         durationSeconds: Int,
     ) = runCatching {
-        val searchRes = ytMusic.searchTidalId(url, query).body<TidalSearchResponse>()
-        val firstRes = searchRes.data?.items?.firstOrNull { it?.duration?.let { dur -> abs(dur - durationSeconds) <= 1 } ?: false }
+        val token = ensureTidalToken()
+        val searchRes = ytMusic.searchTidalId(token, query).body<TidalSearchResponse>()
         val matchedItem =
-            firstRes ?: searchRes.data
+            searchRes.tracks
                 ?.items
-                ?.filter { it?.duration?.let { dur -> abs(dur - durationSeconds) <= 1 } ?: false }
-                ?.minByOrNull { abs((it?.duration ?: 0) - durationSeconds) }
+                ?.filterNotNull()
+                ?.filter { it.duration?.let { dur -> abs(dur - durationSeconds) <= 1 } ?: false }
+                ?.minByOrNull { abs((it.duration ?: 0) - durationSeconds) }
                 ?: throw Exception("No matching track found")
+        val attrs = matchedItem.audioAnalysisAttributes
         TidalMetadataResult(
-            bpm = matchedItem.bpm,
-            musicKey = matchedItem.key,
-            keyScale = matchedItem.keyScale,
+            bpm = attrs?.bpm?.toDoubleOrNull()?.toInt(),
+            musicKey = attrs?.key,
+            keyScale = attrs?.keyScale,
         )
     }
 
@@ -2124,18 +2048,5 @@ class YouTube {
 
         const val DEFAULT_VISITOR_DATA = "CgtsZG1ySnZiQWtSbyiMjuGSBg%3D%3D"
 
-        // Tidal uptime cache TTL: 10 minutes
-        private const val TIDAL_UPTIME_TTL_MS = 5 * 60 * 1000L
-
-        // Hard-coded Tidal-like instances used when the uptime worker is unreachable.
-        // Ordered by priority (top = most preferred). We probe each sequentially and
-        // pick the first one that responds, then cache the choice for [TIDAL_UPTIME_TTL_MS].
-        private val TIDAL_FALLBACK_URLS =
-            listOf(
-                "https://hifi.geeked.wtf",
-                "https://eu-central.monochrome.tf",
-                "https://us-west.monochrome.tf",
-                "https://api.monochrome.tf",
-            )
     }
 }

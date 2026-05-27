@@ -173,41 +173,36 @@ internal class StreamRepositoryImpl(
                     Logger.d("Stream", "expireInSeconds ${response.streamingData?.expiresInSeconds}")
                     Logger.w("Stream", "expired at ${now().plusSeconds(response.streamingData?.expiresInSeconds?.toLong() ?: 0L)}")
                     val durationSecond = response.videoDetails?.lengthSeconds?.toIntOrNull()
-                    // AutoMix metadata from Tidal (hoisted for NewFormatEntity insertion below)
+                    // AutoMix metadata from Tidal official API
                     var tidalBpm: Int? = null
                     var tidalMusicKey: String? = null
                     var tidalKeyScale: String? = null
                     if (!isVideo && durationSecond != null && data.third == MediaType.Song) {
-                        val metadataEndpoint = youTube.getTidalEndpoints().metadataUrl
-                        if (metadataEndpoint != null) {
-                            val title = response.videoDetails?.title ?: ""
-                            val author = response.videoDetails?.author ?: ""
-                            val q =
-                                "$title $author"
-                                    .replace(
-                                        Regex("\\((feat\\.|ft.|cùng với|con|mukana|com|avec|合作音乐人: ) "),
-                                        " ",
-                                    ).replace(
-                                        Regex("( và | & | и | e | und |, |和| dan)"),
-                                        " ",
-                                    ).replace("  ", " ")
-                                    .replace(Regex("([()])"), "")
-                                    .replace(".", " ")
-                                    .replace("  ", " ")
-                            Logger.d("Stream", "Search Tidal metadata for: $q (endpoint=$metadataEndpoint)")
-                            youTube
-                                .searchTidalMetadata(metadataEndpoint, q, durationSecond)
-                                .onSuccess { metadata ->
-                                    Logger.w("Stream", "Tidal metadata: $metadata")
-                                    tidalBpm = metadata.bpm
-                                    tidalMusicKey = metadata.musicKey
-                                    tidalKeyScale = metadata.keyScale
-                                }.onFailure {
-                                    Logger.e("Stream", "Tidal metadata error: ${it.message}", it)
-                                }
-                        } else {
-                            Logger.d("Stream", "No working Tidal endpoint, skipping metadata fetch")
-                        }
+                        val title = response.videoDetails?.title ?: ""
+                        val author = response.videoDetails?.author ?: ""
+                        val q =
+                            "$title $author"
+                                .replace(
+                                    Regex("\\((feat\\.|ft.|cùng với|con|mukana|com|avec|合作音乐人: ) "),
+                                    " ",
+                                ).replace(
+                                    Regex("( và | & | и | e | und |, |和| dan)"),
+                                    " ",
+                                ).replace("  ", " ")
+                                .replace(Regex("([()])"), "")
+                                .replace(".", " ")
+                                .replace("  ", " ")
+                        Logger.d("Stream", "Search Tidal metadata for: $q")
+                        youTube
+                            .searchTidalMetadata(q, durationSecond)
+                            .onSuccess { metadata ->
+                                Logger.w("Stream", "Tidal metadata: $metadata")
+                                tidalBpm = metadata.bpm
+                                tidalMusicKey = metadata.musicKey
+                                tidalKeyScale = metadata.keyScale
+                            }.onFailure {
+                                Logger.e("Stream", "Tidal metadata error: ${it.message}", it)
+                            }
                     }
                     insertNewFormat(
                         NewFormatEntity(

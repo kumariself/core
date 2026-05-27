@@ -45,11 +45,13 @@ import io.ktor.client.request.headers
 import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.prepareRequest
+import io.ktor.client.request.forms.submitForm
 import io.ktor.client.request.setBody
 import io.ktor.client.request.url
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.Parameters
 import io.ktor.http.contentType
 import io.ktor.http.userAgent
 import io.ktor.serialization.kotlinx.json.json
@@ -1160,56 +1162,40 @@ class Ytmusic {
         }
     }
 
+    suspend fun getTidalOAuthToken() =
+        httpClient.submitForm(
+            url = TIDAL_AUTH_URL,
+            formParameters =
+                Parameters.build {
+                    append("client_id", TIDAL_CLIENT_ID)
+                    append("client_secret", TIDAL_CLIENT_SECRET)
+                    append("grant_type", "client_credentials")
+                },
+        )
+
     suspend fun searchTidalId(
-        url: String,
+        token: String,
         query: String,
-    ) = httpClient.get("$url/search") {
-        contentType(ContentType.Application.Json)
-        header("accept", "*/*")
-        parameter("s", query)
+    ) = httpClient.get(TIDAL_SEARCH_URL) {
+        header("Authorization", "Bearer $token")
+        header("Accept", "application/json")
+        header("Referer", "https://tidal.com/")
+        userAgent("Mozilla/5.0 (X11; Linux x86_64; rv:144.0) Gecko/20100101 Firefox/144.0")
+        parameter("query", query)
+        parameter("types", "TRACKS")
+        parameter("limit", 5)
+        parameter("countryCode", "US")
+        parameter("locale", "en_US")
+        parameter("deviceType", "BROWSER")
+        parameter("includeContributors", true)
+        parameter("supportsUserData", true)
     }
-
-    suspend fun getTidalStream(
-        url: String,
-        tidalId: String,
-    ) = httpClient.get("$url/track") {
-        contentType(ContentType.Application.Json)
-        header("accept", "*/*")
-        parameter("id", tidalId)
-        parameter("quality", "HIGH")
-    }
-
-    suspend fun getTidalUptime() =
-        httpClient.get(TIDAL_UPTIME_URL) {
-            header("accept", "*/*")
-            header("origin", "https://monochrome.tf")
-        }
-
-    /**
-     * Lightweight liveness probe for a Tidal-like instance. Used by the YouTube layer's
-     * fallback chain when the uptime worker is unreachable — picks the first reachable
-     * instance from a hard-coded priority list.
-     *
-     * Uses `/search` with a throwaway query because every Tidal-like server we target
-     * implements that endpoint. Timeout is bounded so a dead instance can't stall the
-     * whole fallback chain.
-     */
-    suspend fun probeTidalInstance(url: String): Boolean =
-        withTimeoutOrNull(TIDAL_PROBE_TIMEOUT_MS) {
-            runCatching {
-                httpClient
-                    .get("$url/search") {
-                        contentType(ContentType.Application.Json)
-                        header("accept", "*/*")
-                        parameter("s", "probe")
-                    }.status
-                    .value in 200..299
-            }.getOrDefault(false)
-        } ?: false
 
     companion object {
-        const val TIDAL_UPTIME_URL = "https://tidal-uptime.jiffy-puffs-1j.workers.dev/"
-        private const val TIDAL_PROBE_TIMEOUT_MS = 2000L
+        private const val TIDAL_AUTH_URL = "https://auth.tidal.com/v1/oauth2/token"
+        private const val TIDAL_SEARCH_URL = "https://tidal.com/v2/client-search/"
+        private const val TIDAL_CLIENT_ID = "txNoH4kkV41MfH25"
+        private const val TIDAL_CLIENT_SECRET = "dQjy0MinCEvxi1O4UmxvxWnDjt4cgHBPw8ll6nYBk98="
     }
 }
 
