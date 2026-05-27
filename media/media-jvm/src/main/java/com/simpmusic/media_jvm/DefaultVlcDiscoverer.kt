@@ -80,10 +80,13 @@ class DefaultVlcDiscoverer : NativeDiscoveryStrategy {
 
             // 3. Fallback: relative to working directory
             val osName = System.getProperty("os.name", "").lowercase()
+            val osArch = System.getProperty("os.arch", "").lowercase()
             val subDir = when {
-                osName.contains("win") -> "windows"
-                osName.contains("mac") -> "macos"
-                else -> "linux"
+                osName.contains("win") ->
+                    if (osArch.contains("aarch64")) "windows-arm64" else "windows-x64"
+                osName.contains("mac") ->
+                    if (osArch.contains("aarch64")) "macos-arm64" else "macos-x64"
+                else -> "linux-x64"
             }
             val fallbackDir = File("vlc-natives/$subDir")
             if (fallbackDir.exists() && hasVlcLib(fallbackDir)) return fallbackDir.absolutePath

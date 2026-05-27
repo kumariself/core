@@ -48,6 +48,9 @@ import java.awt.image.DataBufferInt
 import java.io.File
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.abs
+import kotlin.math.exp
+import kotlin.math.ln
 import javax.swing.JPanel
 
 private const val TAG = "VlcPlayerAdapter"
@@ -123,6 +126,13 @@ class VlcPlayerAdapter(
                 Logger.d(TAG, "Crossfade duration: $crossfadeDurationMs ms")
             }
         }
+
+        coroutineScope.launch {
+            dataStoreManager.crossfadeDjMode.collect { enabled ->
+                djCrossfadeEnabled = (enabled == DataStoreManager.TRUE)
+                Logger.d(TAG, "DJ crossfade mode: $djCrossfadeEnabled")
+            }
+        }
     }
 
     // ========== State Management ==========
@@ -190,6 +200,9 @@ class VlcPlayerAdapter(
     private var crossfadeDurationMs = 5000
 
     @Volatile
+    private var djCrossfadeEnabled = false
+
+    @Volatile
     private var secondaryPlayer: VlcPlayer? = null
 
     @Volatile
@@ -201,6 +214,9 @@ class VlcPlayerAdapter(
     /** Index we're crossfading from; used when cancelling to revert localCurrentMediaItemIndex. */
     @Volatile
     private var crossfadeFromIndex = -1
+
+    // AutoMix metadata cache (in-memory, populated from Tidal via NewFormatEntity)
+    private val audioMetaCache = ConcurrentHashMap<String, SongAudioMeta>()
 
     private fun setCrossfading(value: Boolean) {
         if (isCrossfading != value) {
@@ -1084,6 +1100,12 @@ class VlcPlayerAdapter(
                     // Start position updates
                     startPositionUpdates()
 
+                    // Eagerly load audio metadata for auto crossfade / DJ mode calculations
+                    if (crossfadeEnabled && (crossfadeDurationMs == DataStoreManager.CROSSFADE_DURATION_AUTO || djCrossfadeEnabled)) {
+                        val videoId = playlist.getOrNull(localCurrentMediaItemIndex)?.mediaId ?: ""
+                        loadAudioMetaIfNeeded(videoId)
+                    }
+
                     // Trigger precaching
                     triggerPrecachingInternal()
                 } catch (e: Exception) {
@@ -1440,8 +1462,11 @@ class VlcPlayerAdapter(
                                 }
                             },
                         )
+                        nextPlayer.mediaPlayer.audio().isMute = true
                         nextPlayer.setVolume(0)
                         nextPlayer.mediaPlayer.controls().play()
+                        delay(50)
+                        nextPlayer.mediaPlayer.audio().isMute = false
                     }
 
                     if (nextPlayer == null) {
@@ -1451,7 +1476,15 @@ class VlcPlayerAdapter(
                     }
 
                     // Capture current index BEFORE advancing localCurrentMediaItemIndex
+                    val currentVideoId = playlist.getOrNull(localCurrentMediaItemIndex)?.mediaId ?: ""
                     crossfadeFromIndex = localCurrentMediaItemIndex
+
+                    // AutoMix: load metadata and calculate parameters
+                    val isAutoMode = crossfadeDurationMs == DataStoreManager.CROSSFADE_DURATION_AUTO
+                    if (isAutoMode || djCrossfadeEnabled) {
+                        loadAudioMetaIfNeeded(currentVideoId)
+                        loadAudioMetaIfNeeded(nextVideoId)
+                    }
 
                     // Update now playing and video surface immediately
                     localCurrentMediaItemIndex = nextIndex
@@ -1467,30 +1500,36 @@ class VlcPlayerAdapter(
 
                     Logger.d(TAG, "Now playing updated to track $nextIndex during crossfade")
 
+                    // AutoMix: resolve duration and BPM ratio
+                    val resolvedConfigDurationMs =
+                        if (isAutoMode) {
+                            resolveAutoCrossfadeDurationMs(currentVideoId, nextVideoId)
+                        } else {
+                            crossfadeDurationMs
+                        }
+                    // VLC cannot ramp setRate() without audio glitches — skip speed matching,
+                    // rely on duration gap factors (longer crossfade for different tempos)
+
                     // Calculate effective crossfade duration based on ACTUAL remaining time.
-                    // If the secondary player wasn't precached, URL resolution + buffering may
-                    // have consumed part of the crossfade window. Use the lesser of configured
-                    // duration and actual remaining time so the animation ends when the old track does.
                     val actualTimeRemaining =
                         currentPlayer?.let { player ->
                             val dur = player.length
                             val pos = player.time
-                            if (dur > 0 && pos >= 0) (dur - pos) else crossfadeDurationMs.toLong()
-                        } ?: crossfadeDurationMs.toLong()
+                            if (dur > 0 && pos >= 0) (dur - pos) else resolvedConfigDurationMs.toLong()
+                        } ?: resolvedConfigDurationMs.toLong()
 
                     val effectiveCrossfadeDurationMs =
                         minOf(
-                            crossfadeDurationMs.toLong(),
+                            resolvedConfigDurationMs.toLong(),
                             actualTimeRemaining,
                         ).coerceAtLeast(1000L).toInt()
 
                     Logger.d(
                         TAG,
-                        "Crossfade duration: configured=${crossfadeDurationMs}ms, " +
+                        "Crossfade duration: configured=${resolvedConfigDurationMs}ms (auto=$isAutoMode), " +
                             "actualRemaining=${actualTimeRemaining}ms, effective=${effectiveCrossfadeDurationMs}ms",
                     )
 
-                    // Perform crossfade animation with effective duration
                     performCrossfade(nextIndex, nextPlayer, effectiveCrossfadeDurationMs)
                 } catch (e: Exception) {
                     if (e !is CancellationException) {
@@ -1547,11 +1586,12 @@ class VlcPlayerAdapter(
         effectiveDurationMs: Int,
     ) {
         val steps = 50
-        val delayPerStep = (effectiveDurationMs / steps).coerceAtLeast(20) // min 20ms per step
+        val delayPerStep = (effectiveDurationMs / steps).coerceAtLeast(20)
         val targetVolume = (internalVolume * 100).toInt()
         Logger.d(
             TAG,
-            "Crossfade animation: ${effectiveDurationMs}ms, $steps steps, ${delayPerStep}ms/step, internalVolume=$internalVolume, targetVolume=$targetVolume",
+            "Crossfade animation: ${effectiveDurationMs}ms, $steps steps, ${delayPerStep}ms/step, " +
+                "internalVolume=$internalVolume",
         )
 
         try {
@@ -1561,23 +1601,18 @@ class VlcPlayerAdapter(
                 val progress = step.toFloat() / steps
                 val angle = progress * Math.PI / 2.0
 
-                // Equal-power crossfade using sine curve
-                // Fade out: cos curve holds volume longer, then drops naturally
                 val fadeOutVolume = (targetVolume * kotlin.math.cos(angle)).toInt()
                 currentPlayer?.setVolume(fadeOutVolume)
 
-                // Fade in: sin curve brings next track in earlier
                 val fadeInVolume = (targetVolume * kotlin.math.sin(angle)).toInt()
                 nextPlayer.setVolume(fadeInVolume)
 
                 delay(delayPerStep.toLong())
             }
 
-            // Transition complete
             finalizeCrossfade(nextIndex, nextPlayer)
         } catch (e: CancellationException) {
             Logger.d(TAG, "Crossfade cancelled")
-            // Release is safe even if caller also releases (isReleased guard prevents double-release)
             nextPlayer.release()
             secondaryPlayer = null
             setCrossfading(false)
@@ -1634,6 +1669,143 @@ class VlcPlayerAdapter(
      * VLC timeChanged callback handles position caching, but we need
      * this loop for crossfade trigger detection.
      */
+
+    data class SongAudioMeta(
+        val bpm: Int?,
+        val key: String?,
+        val keyScale: String?,
+    )
+
+    private suspend fun loadAudioMetaIfNeeded(videoId: String) {
+        if (videoId.isBlank() || audioMetaCache.containsKey(videoId)) return
+        try {
+            val format = streamRepository.getNewFormat(videoId).firstOrNull()
+            if (format == null) {
+                Logger.d(TAG, "AutoMix meta: no NewFormatEntity found for videoId=$videoId")
+                return
+            }
+            if (format.bpm != null || format.musicKey != null) {
+                audioMetaCache[videoId] = SongAudioMeta(format.bpm, format.musicKey, format.keyScale)
+                Logger.d(TAG, "AutoMix meta loaded: videoId=$videoId, bpm=${format.bpm}, key=${format.musicKey} ${format.keyScale}")
+            } else {
+                Logger.d(TAG, "AutoMix meta: format exists but no bpm/key data for videoId=$videoId")
+            }
+        } catch (e: Exception) {
+            Logger.w(TAG, "Failed to load AutoMix meta for $videoId: ${e.message}")
+        }
+    }
+
+    private fun getAutoTargetDurationMs(bpm: Int): Double {
+        val clampedBpm = bpm.coerceIn(70, 170)
+        return 30000.0 - (clampedBpm - 70) * 230.0
+    }
+
+    private fun resolveAutoCrossfadeDurationMs(
+        currentVideoId: String,
+        nextVideoId: String,
+    ): Int {
+        val currentBpm = audioMetaCache[currentVideoId]?.bpm
+        val nextBpm = audioMetaCache[nextVideoId]?.bpm
+        if (currentBpm == null || nextBpm == null) return AUTO_FALLBACK_DURATION_MS
+        if (currentBpm <= 0 || nextBpm <= 0) return AUTO_FALLBACK_DURATION_MS
+
+        val beatMs = 60_000.0 / currentBpm
+        val baseTargetMs = getAutoTargetDurationMs(currentBpm)
+
+        val bpmGapFactor = calculateBpmGapDurationFactor(currentBpm, nextBpm)
+        val keyGapFactor = calculateKeyGapDurationFactor(currentVideoId, nextVideoId)
+        val adjustedTargetMs = baseTargetMs * bpmGapFactor * keyGapFactor
+
+        val bestBeatCount =
+            BEAT_COUNT_OPTIONS.minByOrNull { abs(it * beatMs - adjustedTargetMs) }
+                ?: DEFAULT_BEAT_COUNT
+        val duration = (bestBeatCount * beatMs).toInt()
+
+        Logger.d(
+            TAG,
+            "AutoMix duration: bpm=$currentBpm→$nextBpm, base=${baseTargetMs.toInt()}ms, " +
+                "bpmGap=${"%.2f".format(bpmGapFactor)}, keyGap=${"%.2f".format(keyGapFactor)}, " +
+                "adjusted=${adjustedTargetMs.toInt()}ms, beats=$bestBeatCount, final=${duration}ms",
+        )
+
+        return duration.coerceIn(AUTO_MIN_DURATION_MS, AUTO_MAX_DURATION_MS)
+    }
+
+    private fun calculateBpmGapDurationFactor(currentBpm: Int, nextBpm: Int): Double {
+        if (currentBpm <= 0 || nextBpm <= 0) return 1.0
+        var ratio = nextBpm.toDouble() / currentBpm.toDouble()
+        while (ratio > 1.5) ratio /= 2.0
+        while (ratio < 0.67) ratio *= 2.0
+        val gapPercent = abs(1.0 - ratio)
+        return 1.0 + gapPercent * BPM_GAP_DURATION_SCALE
+    }
+
+    private fun calculateKeyGapDurationFactor(
+        currentVideoId: String,
+        nextVideoId: String,
+    ): Double {
+        val currentMeta = audioMetaCache[currentVideoId]
+        val nextMeta = audioMetaCache[nextVideoId]
+        val currentKey = currentMeta?.key ?: return UNKNOWN_GAP_DEFAULT_FACTOR
+        val nextKey = nextMeta?.key ?: return UNKNOWN_GAP_DEFAULT_FACTOR
+
+        val currentCamelot = keyToCamelot(currentKey, currentMeta.keyScale) ?: return 1.0
+        val nextCamelot = keyToCamelot(nextKey, nextMeta.keyScale) ?: return 1.0
+
+        val dist = camelotDistance(currentCamelot, nextCamelot)
+        return when {
+            dist <= 1 -> 1.0
+            dist == 2 -> 1.1
+            dist <= 4 -> 1.25
+            else -> 1.4
+        }
+    }
+
+    // ========== Camelot Wheel ==========
+
+    private data class CamelotCode(val number: Int, val isMinor: Boolean) {
+        override fun toString(): String = "$number${if (isMinor) "A" else "B"}"
+    }
+
+    private fun keyToCamelot(key: String, keyScale: String?): CamelotCode? {
+        val semitone = keyToSemitone(key)
+        if (semitone < 0) return null
+        val isMinor = keyScale?.uppercase()?.contains("MIN") == true
+        val minorCamelotByPitch = intArrayOf(5, 12, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10)
+        val majorCamelotByPitch = intArrayOf(8, 3, 10, 5, 12, 7, 2, 9, 4, 11, 6, 1)
+        val number = if (isMinor) minorCamelotByPitch[semitone] else majorCamelotByPitch[semitone]
+        return CamelotCode(number, isMinor)
+    }
+
+    private fun camelotDistance(a: CamelotCode, b: CamelotCode): Int {
+        val numberDiff = abs(a.number - b.number)
+        val circularDist = minOf(numberDiff, 12 - numberDiff)
+        val typeDiff = if (a.isMinor != b.isMinor) 1 else 0
+        return circularDist + typeDiff
+    }
+
+    private fun keyToSemitone(key: String): Int =
+        when (key.trim()) {
+            "C" -> 0; "C#", "Db" -> 1; "D" -> 2; "D#", "Eb" -> 3
+            "E" -> 4; "F" -> 5; "F#", "Gb" -> 6; "G" -> 7
+            "G#", "Ab" -> 8; "A" -> 9; "A#", "Bb" -> 10; "B" -> 11
+            else -> -1
+        }
+
+    companion object {
+        private const val AUTO_FALLBACK_DURATION_MS = 30000
+        private const val AUTO_MIN_DURATION_MS = 20000
+        private const val AUTO_MAX_DURATION_MS = 45000
+        private val BEAT_COUNT_OPTIONS = intArrayOf(8, 16, 24, 32, 40, 48, 64, 80, 96)
+        private const val DEFAULT_BEAT_COUNT = 32
+        private const val BPM_RATIO_MIN = 0.75f
+        private const val BPM_RATIO_MAX = 1.25f
+        private const val BPM_GAP_DURATION_SCALE = 2.0
+        private const val UNKNOWN_GAP_DEFAULT_FACTOR = 1.25
+    }
+
+    // ========== Position Updates ==========
+
     private fun startPositionUpdates() {
         stopPositionUpdates()
 
@@ -1666,8 +1838,11 @@ class VlcPlayerAdapter(
 
                             // Check if should trigger crossfade.
                             // Use currentPlayer's time (not the timeline player) for trigger detection.
+                            // Block when paused (internalPlayWhenReady=false) to prevent
+                            // crossfade during queue restore.
                             if (crossfadeEnabled &&
-                                !isCrossfading
+                                !isCrossfading &&
+                                internalPlayWhenReady
                             ) {
                                 val player = currentPlayer
                                 if (player != null) {
@@ -1678,7 +1853,14 @@ class VlcPlayerAdapter(
                                         val nextVideoId = playlist.getOrNull(getNextMediaItemIndex())?.mediaId
                                         val isPrecached = nextVideoId != null && precachedPlayers.containsKey(nextVideoId)
                                         val preparationBufferMs = if (isPrecached) 0L else 3000L
-                                        val triggerThreshold = crossfadeDurationMs.toLong() + preparationBufferMs
+                                        val resolvedDurationMs =
+                                            if (crossfadeDurationMs == DataStoreManager.CROSSFADE_DURATION_AUTO) {
+                                                val currentVideoId = playlist.getOrNull(localCurrentMediaItemIndex)?.mediaId ?: ""
+                                                resolveAutoCrossfadeDurationMs(currentVideoId, nextVideoId ?: "")
+                                            } else {
+                                                crossfadeDurationMs
+                                            }
+                                        val triggerThreshold = resolvedDurationMs.toLong() + preparationBufferMs
                                         if (timeRemaining in 1..triggerThreshold) {
                                             if (hasNextMediaItem()) {
                                                 val nextIndex = getNextMediaItemIndex()
