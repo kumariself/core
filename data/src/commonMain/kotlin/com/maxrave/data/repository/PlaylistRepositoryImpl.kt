@@ -778,18 +778,7 @@ internal class PlaylistRepositoryImpl(
                     val result =
                         data.mapNotNull {
                             ChartItem(
-                                country =
-                                    when (it.country) {
-                                        "global" -> ChartItem.Country.GLOBAL
-                                        "vn" -> ChartItem.Country.VIETNAM
-                                        "it" -> ChartItem.Country.ITALY
-                                        "in" -> ChartItem.Country.INDIA
-                                        "id" -> ChartItem.Country.INDONESIA
-                                        "br" -> ChartItem.Country.BRAZIL
-                                        "us" -> ChartItem.Country.UNITED_STATE
-                                        "mx" -> ChartItem.Country.MEXICO
-                                        else -> return@mapNotNull null
-                                    },
+                                name = it.name ?: return@mapNotNull null,
                                 ytPlaylistId = it.youtubePlaylistId ?: return@mapNotNull null,
                             )
                         }
