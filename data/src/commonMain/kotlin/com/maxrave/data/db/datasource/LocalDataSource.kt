@@ -139,6 +139,12 @@ internal class LocalDataSource(
         thumbnails: String,
     ) = databaseDao.updateArtistImage(channelId, thumbnails)
 
+    suspend fun updateArtistNameLogo(
+        channelId: String,
+        nameLogoUrl: String?,
+        nameLogoColor: String?,
+    ) = databaseDao.updateArtistNameLogo(channelId, nameLogoUrl, nameLogoColor)
+
     suspend fun updateFollowed(
         followed: Int,
         channelId: String,

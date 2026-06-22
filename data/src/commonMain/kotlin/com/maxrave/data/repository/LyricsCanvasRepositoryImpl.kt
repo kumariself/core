@@ -8,6 +8,7 @@ import com.maxrave.data.mapping.toLyrics
 import com.maxrave.domain.data.entities.LyricsEntity
 import com.maxrave.domain.data.entities.TranslatedLyricsEntity
 import com.maxrave.domain.data.model.browse.album.Track
+import com.maxrave.domain.data.model.browse.artist.ArtistLogo
 import com.maxrave.domain.data.model.canvas.CanvasResult
 import com.maxrave.domain.data.model.metadata.Lyrics
 import com.maxrave.domain.data.model.metadata.SimpMusicLyrics
@@ -34,6 +35,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.simpmusic.aiservice.AiClient
 import org.simpmusic.lyrics.SimpMusicLyricsClient
+import org.simpmusic.lyrics.am.toImageUrl
 import org.simpmusic.lyrics.models.request.LyricsBody
 import org.simpmusic.lyrics.models.request.TranslatedLyricsBody
 import org.simpmusic.lyrics.parser.parseTtmlLyrics
@@ -442,6 +444,48 @@ internal class LyricsCanvasRepositoryImpl(
                 }.onFailure {
                     it.printStackTrace()
                     emit(Resource.Error<Lyrics>("BetterLyrics search failed"))
+                }
+        }.flowOn(Dispatchers.IO)
+
+    override fun getArtistLogo(artistName: String): Flow<Resource<ArtistLogo>> =
+        flow {
+            simpMusicLyrics
+                .searchAMArtist(artistName, limit = 1)
+                .onSuccess { artists ->
+                    val id = artists.firstOrNull()?.id
+                    if (id == null) {
+                        emit(Resource.Error<ArtistLogo>("Artist not found"))
+                        return@onSuccess
+                    }
+                    simpMusicLyrics
+                        .getAMArtist(id)
+                        .onSuccess { artist ->
+                            val logo = artist?.attributes?.editorialArtwork?.musicContentColorLogoTrimmed
+                            val srcW = logo?.width ?: 0
+                            val srcH = logo?.height ?: 0
+                            // Scale down to ~1000px wide, keeping the logo aspect ratio.
+                            val targetW = 1000
+                            val targetH = if (srcW > 0) (srcH.toLong() * targetW / srcW).toInt() else srcH
+                            val url = logo?.toImageUrl(targetW, targetH)
+                            if (logo == null || url == null) {
+                                emit(Resource.Error<ArtistLogo>("No artist logo"))
+                                return@onSuccess
+                            }
+                            emit(
+                                Resource.Success(
+                                    ArtistLogo(
+                                        logoUrl = url,
+                                        bgColorHex = logo.bgColor,
+                                        width = srcW,
+                                        height = srcH,
+                                    ),
+                                ),
+                            )
+                        }.onFailure {
+                            emit(Resource.Error<ArtistLogo>(it.message ?: "Failed to fetch artist"))
+                        }
+                }.onFailure {
+                    emit(Resource.Error<ArtistLogo>(it.message ?: "Artist search failed"))
                 }
         }.flowOn(Dispatchers.IO)
 

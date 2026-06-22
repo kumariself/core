@@ -20,9 +20,11 @@ import io.ktor.client.request.headers
 import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.HttpResponse
 import io.ktor.http.HttpHeaders
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
+import org.simpmusic.lyrics.am.AMTokenManager
 import org.simpmusic.lyrics.models.request.LyricsBody
 import org.simpmusic.lyrics.models.request.TranslatedLyricsBody
 import org.simpmusic.lyrics.models.request.VoteBody
@@ -37,6 +39,8 @@ class SimpMusicLyrics {
         }
 
     private val baseUrl = "https://api-lyrics.simpmusic.org/v1/"
+
+    private val amTokenManager = AMTokenManager()
 
     private fun createClient() =
         HttpClient(getEngine()) {
@@ -92,6 +96,19 @@ class SimpMusicLyrics {
             hmac?.let {
                 header("X-HMAC", it)
             }
+        }
+    }
+
+    private fun HttpRequestBuilder.buildAMHeaders(token: String) {
+        headers {
+            header("Authorization", "Bearer $token")
+            header("Origin", "https://music.apple.com")
+            header("Referer", "https://music.apple.com/")
+            header(
+                HttpHeaders.UserAgent,
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:152.0) Gecko/20100101 Firefox/152.0",
+            )
+            header(HttpHeaders.Accept, "application/json")
         }
     }
 
@@ -182,5 +199,57 @@ class SimpMusicLyrics {
         durationSeconds?.let {
             parameter("d", it)
         }
+    }
+
+    suspend fun searchAMArtist(
+        name: String,
+        limit: Int,
+    ): HttpResponse {
+        val response = requestAMSearch(name, limit, amTokenManager.getToken(httpClient))
+        // Expired bearer -> refresh the token once and retry on a fresh request.
+        if (response.status.value == 401) {
+            amTokenManager.clearToken()
+            return requestAMSearch(name, limit, amTokenManager.getToken(httpClient))
+        }
+        return response
+    }
+
+    private suspend fun requestAMSearch(
+        name: String,
+        limit: Int,
+        token: String,
+    ) = httpClient.get("https://amp-api-edge.music.apple.com/v1/catalog/us/search") {
+        parameter("term", name)
+        parameter("types", "artists")
+        parameter("fields[artists]", "url,name,artwork")
+        parameter("art[url]", "f")
+        parameter("format[resources]", "map")
+        parameter("extend", "artistUrl")
+        parameter("l", "en-US")
+        parameter("limit", limit)
+        parameter("platform", "web")
+        buildAMHeaders(token)
+    }
+
+    suspend fun getAMArtist(id: String): HttpResponse {
+        val response = requestAMArtist(id, amTokenManager.getToken(httpClient))
+        // Expired bearer -> refresh the token once and retry on a fresh request.
+        if (response.status.value == 401) {
+            amTokenManager.clearToken()
+            return requestAMArtist(id, amTokenManager.getToken(httpClient))
+        }
+        return response
+    }
+
+    private suspend fun requestAMArtist(
+        id: String,
+        token: String,
+    ) = httpClient.get("https://amp-api.music.apple.com/v1/catalog/us/artists/$id") {
+        parameter("art[url]", "c,f")
+        parameter("extend", "editorialArtwork,hero,keyColor")
+        parameter("format[resources]", "map")
+        parameter("l", "en-US")
+        parameter("platform", "web")
+        buildAMHeaders(token)
     }
 }

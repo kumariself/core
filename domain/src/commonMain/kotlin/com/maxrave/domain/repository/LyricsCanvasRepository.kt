@@ -3,6 +3,7 @@ package com.maxrave.domain.repository
 import com.maxrave.domain.data.entities.LyricsEntity
 import com.maxrave.domain.data.entities.TranslatedLyricsEntity
 import com.maxrave.domain.data.model.browse.album.Track
+import com.maxrave.domain.data.model.browse.artist.ArtistLogo
 import com.maxrave.domain.data.model.canvas.CanvasResult
 import com.maxrave.domain.data.model.metadata.Lyrics
 import com.maxrave.domain.manager.DataStoreManager
@@ -64,6 +65,9 @@ interface LyricsCanvasRepository {
         track: String,
         duration: Int?,
     ): Flow<Resource<Lyrics>>
+
+    /** Fetch the artist's name-logo image + dominant color from the hidden catalog. */
+    fun getArtistLogo(artistName: String): Flow<Resource<ArtistLogo>>
 
     fun getAITranslationLyrics(
         lyrics: Lyrics,

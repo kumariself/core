@@ -329,6 +329,13 @@ interface DatabaseDao {
         thumbnails: String,
     )
 
+    @Query("UPDATE artist SET nameLogoUrl = :nameLogoUrl, nameLogoColor = :nameLogoColor WHERE channelId = :channelId")
+    suspend fun updateArtistNameLogo(
+        channelId: String,
+        nameLogoUrl: String?,
+        nameLogoColor: String?,
+    )
+
     @Query("UPDATE artist SET followed = :followed, followedAt = :followedAt WHERE channelId = :channelId")
     suspend fun updateFollowed(
         followed: Int,

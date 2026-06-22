@@ -56,6 +56,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.compose.PlayerSurface
 import androidx.media3.ui.compose.SURFACE_TYPE_SURFACE_VIEW
+import androidx.media3.ui.compose.modifiers.resizeWithContentScale
 import androidx.media3.ui.compose.state.rememberPresentationState
 import coil3.compose.AsyncImage
 import coil3.request.CachePolicy
@@ -81,6 +82,7 @@ fun MediaPlayerView(
     density: Density,
     url: String,
     screenSize: ScreenSizeInfo,
+    cropToBounds: Boolean = false,
 ) {
     val canvasCache: SimpleCache = koinInject<SimpleCache>(named(Config.CANVAS_CACHE))
 
@@ -172,20 +174,44 @@ fun MediaPlayerView(
     }
 
     val presentationState = rememberPresentationState(exoPlayer)
-    Box(modifier = modifier.graphicsLayer { clip = true }) {
-        PlayerSurface(
-            player = exoPlayer,
-            surfaceType = SURFACE_TYPE_SURFACE_VIEW,
-            modifier =
-                Modifier
-                    .fillMaxHeight()
-                    .width(with(density) { widthPx.toDp() })
-                    .align(Alignment.Center),
-        )
+    if (cropToBounds) {
+        // Center scale-to-cover (ContentScale.Crop) into whatever frame the caller gives us.
+        // resizeWithContentScale keeps the true video aspect ratio (no stretch), scales it
+        // to fully cover the frame using the real videoSizeDp, then clips the overflow.
+        Box(modifier = modifier.graphicsLayer { clip = true }) {
+            PlayerSurface(
+                player = exoPlayer,
+                surfaceType = SURFACE_TYPE_SURFACE_VIEW,
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .resizeWithContentScale(
+                            contentScale = ContentScale.Crop,
+                            sourceSizeDp = presentationState.videoSizeDp,
+                        ),
+            )
 
-        if (presentationState.coverSurface) {
-            // Cover the surface that is being prepared with a shutter
-            Box(Modifier.background(Color.Black))
+            if (presentationState.coverSurface) {
+                // Cover the surface that is being prepared with a shutter
+                Box(Modifier.matchParentSize().background(Color.Black))
+            }
+        }
+    } else {
+        Box(modifier = modifier.graphicsLayer { clip = true }) {
+            PlayerSurface(
+                player = exoPlayer,
+                surfaceType = SURFACE_TYPE_SURFACE_VIEW,
+                modifier =
+                    Modifier
+                        .fillMaxHeight()
+                        .width(with(density) { widthPx.toDp() })
+                        .align(Alignment.Center),
+            )
+
+            if (presentationState.coverSurface) {
+                // Cover the surface that is being prepared with a shutter
+                Box(Modifier.background(Color.Black))
+            }
         }
     }
 }

@@ -5,6 +5,8 @@ import com.maxrave.ktorext.crypto.HmacUri
 import com.maxrave.logger.Logger
 import io.ktor.client.call.body
 import io.ktor.client.statement.HttpResponse
+import org.simpmusic.lyrics.am.AMArtistResource
+import org.simpmusic.lyrics.am.AMSearchResponse
 import org.simpmusic.lyrics.models.request.LyricsBody
 import org.simpmusic.lyrics.models.request.TranslatedLyricsBody
 import org.simpmusic.lyrics.models.response.BaseResponse
@@ -151,6 +153,42 @@ class SimpMusicLyricsClient {
                 ).body<BetterLyricsResponse>()
         rs.ttml
     }
+
+    suspend fun searchAMArtist(
+        name: String,
+        limit: Int = 5,
+    ): Result<List<AMArtistResource>> =
+        runCatching {
+            val response = lyricsService.searchAMArtist(name, limit)
+            if (response.status.value !in 200..299) {
+                throw Exception("AM search failed: ${response.status.value}")
+            }
+            val parsed = response.body<AMSearchResponse>()
+            val resources = parsed.resources?.artists.orEmpty()
+            // Keep the search ranking from results.data; fall back to the resources map order.
+            parsed.results
+                ?.artists
+                ?.data
+                ?.mapNotNull { resources[it.id] }
+                ?: resources.values.toList()
+        }
+
+    /**
+     * Fetch a single artist by id, including [AMEditorialArtwork] (name-logo PNG) and keyColor.
+     * Returns null when the id is not present in the response.
+     */
+    suspend fun getAMArtist(id: String): Result<AMArtistResource?> =
+        runCatching {
+            val response = lyricsService.getAMArtist(id)
+            if (response.status.value !in 200..299) {
+                throw Exception("AM artist fetch failed: ${response.status.value}")
+            }
+            response
+                .body<AMSearchResponse>()
+                .resources
+                ?.artists
+                ?.get(id)
+        }
 
     private suspend inline fun <reified T> HttpResponse.bodyOrThrow(): T {
         if (this.status.value == 429) {

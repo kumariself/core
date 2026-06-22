@@ -18,6 +18,12 @@ interface ArtistRepository {
         thumbnail: String,
     )
 
+    suspend fun updateArtistNameLogo(
+        channelId: String,
+        nameLogoUrl: String?,
+        nameLogoColor: String?,
+    )
+
     suspend fun updateFollowedStatus(
         channelId: String,
         followedStatus: Int,

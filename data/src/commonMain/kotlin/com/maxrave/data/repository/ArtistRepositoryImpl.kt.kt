@@ -10,6 +10,7 @@ import com.maxrave.domain.utils.Resource
 import com.maxrave.kotlinytmusicscraper.YouTube
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -45,6 +46,14 @@ internal class ArtistRepositoryImpl(
             channelId,
             thumbnail,
         )
+    }
+
+    override suspend fun updateArtistNameLogo(
+        channelId: String,
+        nameLogoUrl: String?,
+        nameLogoColor: String?,
+    ) = withContext(Dispatchers.IO) {
+        localDataSource.updateArtistNameLogo(channelId, nameLogoUrl, nameLogoColor)
     }
 
     override suspend fun updateFollowedStatus(
