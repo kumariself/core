@@ -2,6 +2,8 @@ package com.maxrave.media3.exoplayer
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -161,6 +163,92 @@ internal class CrossfadeExoPlayerAdapter(
     // Swapped between players during crossfade.
     private var activePlayerListener: Player.Listener? = null
 
+    // ========== Audio Focus (manual, session-scoped) — #2155 ==========
+    // The multi-player swap model means audio focus must NOT be tied to any single
+    // ExoPlayer: releasing the outgoing player would abandon focus, and the incoming
+    // player (built with handleAudioFocus=false) never re-requests it — the root cause
+    // of "music stops between tracks" (see androidx/media#2100). Instead we hold one
+    // app-level AudioFocusRequest at the adapter level so focus survives every swap.
+
+    private val duckVolumeFactor = 0.2f
+
+    private val audioManager: AudioManager? by lazy {
+        context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    }
+
+    @Volatile
+    private var hasAudioFocus = false
+
+    /** True when focus was lost transiently so playback should auto-resume on regain. */
+    @Volatile
+    private var resumeOnFocusGain = false
+
+    private val audioFocusListener =
+        AudioManager.OnAudioFocusChangeListener { focusChange ->
+            when (focusChange) {
+                AudioManager.AUDIOFOCUS_GAIN -> {
+                    // Don't fight the crossfade ramp; while crossfading it owns the volume.
+                    if (!isCrossfading) currentPlayer?.volume = internalVolume
+                    if (resumeOnFocusGain) {
+                        resumeOnFocusGain = false
+                        play()
+                    }
+                }
+
+                AudioManager.AUDIOFOCUS_LOSS -> {
+                    // Permanent loss (another app took over): pause and stop tracking focus.
+                    resumeOnFocusGain = false
+                    hasAudioFocus = false
+                    pause()
+                }
+
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                    // Temporary loss (e.g. an incoming call): pause and remember to resume.
+                    resumeOnFocusGain = internalState == InternalState.PLAYING
+                    pause()
+                }
+
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                    // Lower the volume instead of pausing (e.g. a navigation prompt).
+                    // Skip during crossfade — the ramp owns volume and would override this.
+                    if (!isCrossfading) currentPlayer?.volume = internalVolume * duckVolumeFactor
+                }
+            }
+        }
+
+    private val audioFocusRequest: AudioFocusRequest by lazy {
+        AudioFocusRequest
+            .Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(
+                android.media.AudioAttributes
+                    .Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build(),
+            ).setOnAudioFocusChangeListener(audioFocusListener)
+            .setWillPauseWhenDucked(false)
+            .build()
+    }
+
+    /** Request app-level audio focus once; idempotent while focus is held. */
+    private fun requestAudioFocusInternal(): Boolean {
+        val am = audioManager ?: return true
+        if (hasAudioFocus) return true
+        val granted = am.requestAudioFocus(audioFocusRequest) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        hasAudioFocus = granted
+        Logger.d(TAG, "requestAudioFocus -> granted=$granted")
+        return granted
+    }
+
+    private fun abandonAudioFocusInternal() {
+        val am = audioManager ?: return
+        if (!hasAudioFocus) return
+        am.abandonAudioFocusRequest(audioFocusRequest)
+        hasAudioFocus = false
+        resumeOnFocusGain = false
+        Logger.d(TAG, "abandonAudioFocus")
+    }
+
     // ========== Precaching System ==========
 
     private data class PrecachedPlayer(
@@ -241,7 +329,7 @@ internal class CrossfadeExoPlayerAdapter(
     // ========== ForwardingPlayer for MediaSession ==========
 
     // Create an initial idle ExoPlayer for MediaSession to hold
-    private val initialPlayerWithFilter = createExoPlayerInstance(handleAudioFocus = true)
+    private val initialPlayerWithFilter = createExoPlayerInstance()
 
     /**
      * Stable [Player] reference for MediaSession.
@@ -288,9 +376,10 @@ internal class CrossfadeExoPlayerAdapter(
      * Each player gets its own filter instance so the fade-out player can have
      * an independent low-pass filter while the fade-in player has a high-pass filter.
      *
-     * @param handleAudioFocus true for the current playing player, false for precached/secondary
+     * Audio focus is NOT handled per-player: it is managed once at the adapter level
+     * (see the Audio Focus section) so it survives every player swap (#2155).
      */
-    private fun createExoPlayerInstance(handleAudioFocus: Boolean = false): PlayerWithFilter {
+    private fun createExoPlayerInstance(): PlayerWithFilter {
         val crossfadeFilter = CrossfadeFilterAudioProcessor()
 
         val perPlayerRenderers =
@@ -322,7 +411,7 @@ internal class CrossfadeExoPlayerAdapter(
         val player =
             ExoPlayer
                 .Builder(context)
-                .setAudioAttributes(audioAttributes, handleAudioFocus)
+                .setAudioAttributes(audioAttributes, false)
                 .setLoadControl(
                     DefaultLoadControl
                         .Builder()
@@ -333,7 +422,7 @@ internal class CrossfadeExoPlayerAdapter(
                             0,
                         ).build(),
                 ).setWakeMode(C.WAKE_MODE_NETWORK)
-                .setHandleAudioBecomingNoisy(handleAudioFocus)
+                .setHandleAudioBecomingNoisy(true)
                 .setSeekForwardIncrementMs(5000)
                 .setSeekBackIncrementMs(5000)
                 .setMediaSourceFactory(mediaSourceFactory)
@@ -351,6 +440,7 @@ internal class CrossfadeExoPlayerAdapter(
             when (internalState) {
                 InternalState.READY, InternalState.ENDED, InternalState.PAUSED -> {
                     currentPlayer?.let { player ->
+                        requestAudioFocusInternal()
                         player.play()
                         transitionToState(InternalState.PLAYING)
                         internalPlayWhenReady = true
@@ -440,6 +530,7 @@ internal class CrossfadeExoPlayerAdapter(
                 player.stop()
                 transitionToState(InternalState.IDLE)
                 stopPositionUpdates()
+                abandonAudioFocusInternal()
                 notifyEqualizerIntent(false)
             }
         }
@@ -1057,6 +1148,7 @@ internal class CrossfadeExoPlayerAdapter(
         currentPlayerFilter = null
         isCrossfading = false
 
+        abandonAudioFocusInternal()
         coroutineScope.cancel()
         cleanupCurrentPlayerInternal()
         clearAllPrecacheInternal()
@@ -1199,7 +1291,7 @@ internal class CrossfadeExoPlayerAdapter(
                         playerFilter = cachedPlayerEntry.filter
                     } else {
                         Logger.d(TAG, "Creating new player for $videoId")
-                        val pwf = createExoPlayerInstance(handleAudioFocus = false)
+                        val pwf = createExoPlayerInstance()
                         player = pwf.player
                         playerFilter = pwf.filter
                         player.setMediaItem(mediaItem.toMedia3MediaItem())
@@ -1246,9 +1338,8 @@ internal class CrossfadeExoPlayerAdapter(
                         }
                     }
 
-                    // Enable audio focus and headphone-disconnect handling on the current player
-                    player.setAudioAttributes(audioAttributes, true)
-                    player.setHandleAudioBecomingNoisy(true)
+                    // Audio focus is held at the adapter level (see Audio Focus section),
+                    // not per-player, so it survives this swap (#2155).
 
                     // Apply settings
                     player.volume = internalVolume
@@ -1263,6 +1354,7 @@ internal class CrossfadeExoPlayerAdapter(
 
                     // Auto-play if requested
                     if (shouldPlay) {
+                        requestAudioFocusInternal()
                         player.play()
                         transitionToState(InternalState.PLAYING)
                     } else {
@@ -1572,7 +1664,7 @@ internal class CrossfadeExoPlayerAdapter(
                     nextPlayer = cachedPlayerEntry.player
                     nextFilter = cachedPlayerEntry.filter
                 } else {
-                    val pwf = createExoPlayerInstance(handleAudioFocus = false)
+                    val pwf = createExoPlayerInstance()
                     nextPlayer = pwf.player
                     nextFilter = pwf.filter
                     nextPlayer.setMediaItem(nextMediaItem.toMedia3MediaItem())
@@ -1596,6 +1688,7 @@ internal class CrossfadeExoPlayerAdapter(
                 forwardingPlayer.swapDelegate(nextPlayer)
 
                 // 2. Now play - MediaSession's listener is attached and receives state change events
+                requestAudioFocusInternal()
                 nextPlayer.play()
 
                 forwardingPlayer.suppressPlaybackEnded = false
@@ -2306,9 +2399,8 @@ internal class CrossfadeExoPlayerAdapter(
         secondaryPlayerFilter = null
         // localCurrentMediaItemIndex already updated in triggerCrossfadeTransition()
 
-        // Enable audio focus and headphone-disconnect handling on new current player
-        nextPlayer.setAudioAttributes(audioAttributes, true)
-        nextPlayer.setHandleAudioBecomingNoisy(true)
+        // Audio focus is held at the adapter level (see Audio Focus section),
+        // not per-player, so it survives this crossfade swap (#2155).
 
         // Ensure correct volume and playback parameters
         currentPlayer?.volume = internalVolume
@@ -2455,7 +2547,7 @@ internal class CrossfadeExoPlayerAdapter(
                         val mediaItem = playlist.getOrNull(idx) ?: continue
 
                         try {
-                            val pwf = createExoPlayerInstance(handleAudioFocus = false)
+                            val pwf = createExoPlayerInstance()
                             pwf.player.setMediaItem(mediaItem.toMedia3MediaItem())
                             pwf.player.prepare()
                             precachedPlayers[mediaItem.mediaId] = PrecachedPlayer(pwf.player, mediaItem, pwf.filter)

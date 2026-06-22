@@ -695,13 +695,29 @@ internal class MediaServiceHandlerImpl(
 
     // Region: Override functions
     override fun startProgressUpdate() {
+        // Cancel any previous loop first: onIsPlayingChanged(true) can fire repeatedly
+        // (crossfade swap, rebuffer→ready, resume-on-focus-gain) and a leaked loop would
+        // otherwise multiply both the UI updates and the periodic position writes (#2152).
+        progressJob?.cancel()
         progressJob =
             coroutineScope.launch {
+                // Persist the playback position to DataStore on this interval so a sudden
+                // service/process kill while playing in the background (aggressive OEMs)
+                // still restores the correct position instead of restarting the track from
+                // the beginning (#2152). The position is otherwise only saved on pause /
+                // track change / release, which misses uninterrupted background playback.
+                val positionPersistIntervalMs = 5_000L
+                var sinceLastPositionSaveMs = 0L
                 while (true) {
                     delay(100)
                     _simpleMediaState.value = SimpleMediaState.Progress(player.currentPosition)
                     nowPlayingState.value.songEntity?.let {
                         updateDiscordRpc(it)
+                    }
+                    sinceLastPositionSaveMs += 100
+                    if (sinceLastPositionSaveMs >= positionPersistIntervalMs) {
+                        sinceLastPositionSaveMs = 0
+                        mayBeSaveRecentPosition()
                     }
                 }
             }
@@ -1985,6 +2001,21 @@ internal class MediaServiceHandlerImpl(
             runBlocking { unit() }
         } else {
             coroutineScope.launch { unit() }
+        }
+    }
+
+    /**
+     * Lightweight periodic persistence of just the playback position (#2152).
+     * Unlike [mayBeSaveRecentSong] this does NOT rewrite the whole saved queue, so it is
+     * cheap enough to call every few seconds while a track plays uninterrupted. The saved
+     * media id + position are what [mayBeRestoreQueue] reads to resume after a process kill.
+     */
+    private fun mayBeSaveRecentPosition() {
+        coroutineScope.launch {
+            if (dataStoreManager.saveRecentSongAndQueue.first() == TRUE) {
+                val videoId = nowPlayingState.value.songEntity?.videoId ?: return@launch
+                dataStoreManager.saveRecentSong(videoId, player.contentPosition)
+            }
         }
     }
 
