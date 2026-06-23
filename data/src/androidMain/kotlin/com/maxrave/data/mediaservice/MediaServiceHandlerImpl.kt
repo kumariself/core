@@ -356,15 +356,24 @@ internal class MediaServiceHandlerImpl(
                 }
             val discordRPCEnabledJob =
                 launch {
-                    dataStoreManager.richPresenceEnabled.collectLatest {
-                        if (it == TRUE && discordRPC == null) {
+                    // Run Rich Presence only when it's enabled AND the user is logged in (non-blank
+                    // token). Building DiscordRPC("") makes the gateway loop connect→identify-fail→
+                    // reconnect forever and drains the battery (issue #2157). Combining both flows also
+                    // tears the RPC down the moment the token is cleared on logout.
+                    combine(
+                        dataStoreManager.richPresenceEnabled,
+                        dataStoreManager.discordToken,
+                    ) { enabled, token ->
+                        enabled == TRUE && token.isNotBlank()
+                    }.distinctUntilChanged().collectLatest { shouldRun ->
+                        if (shouldRun && discordRPC == null) {
                             discordRPC = DiscordRPC(dataStoreManager.discordToken.first())
                             nowPlayingState.value.songEntity?.let { song ->
                                 backgroundScope.launch {
                                     updateDiscordRpc(song)
                                 }
                             }
-                        } else if (it == FALSE) {
+                        } else if (!shouldRun) {
                             if (discordRPC?.isRpcRunning() == true) {
                                 discordRPC?.closeRPC()
                             }

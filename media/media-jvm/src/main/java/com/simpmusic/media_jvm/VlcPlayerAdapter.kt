@@ -547,9 +547,12 @@ class VlcPlayerAdapter(
     }
 
     override fun removeMediaItem(index: Int) {
-        if (index !in playlist.indices) return
-
         coroutineScope.launch {
+            // Bounds check MUST run inside the launch, on the same VLC thread/queue as removeAt.
+            // If it sits outside (on the caller thread), another queued op (clearMediaItems/setMediaItem)
+            // can empty the playlist between the check and removeAt → IndexOutOfBounds (issue #2156 /
+            // SIMPMUSIC-DESKTOP-3Y: "Index 0 out of bounds for length 0" on VLC-Player-Thread).
+            if (index !in playlist.indices) return@launch
             val track = playlist.removeAt(index)
 
             precachedPlayers.remove(track.mediaId)?.let { cached ->
@@ -592,9 +595,10 @@ class VlcPlayerAdapter(
         fromIndex: Int,
         toIndex: Int,
     ) {
-        if (fromIndex !in playlist.indices || toIndex !in playlist.indices) return
-
         coroutineScope.launch {
+            // Same reason as removeMediaItem (issue #2156): re-check bounds inside the launch, since the
+            // playlist can be emptied by another queued op between an outside-launch guard and removeAt.
+            if (fromIndex !in playlist.indices || toIndex !in playlist.indices) return@launch
             val item = playlist.removeAt(fromIndex)
             playlist.add(toIndex, item)
 

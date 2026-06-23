@@ -406,15 +406,22 @@ class JvmMediaPlayerHandlerImpl(
                 }
             val discordRPCEnabledJob =
                 launch {
-                    dataStoreManager.richPresenceEnabled
-                        .distinctUntilChanged()
-                        .collectLatest {
-                            if (it == TRUE && discordRPC == null) {
+                    // Run Rich Presence only when enabled AND logged in (non-blank token); a blank-token
+                    // DiscordRPC loops reconnect forever (issue #2157). Combining both flows also tears
+                    // the RPC down as soon as the token is cleared on logout.
+                    combine(
+                        dataStoreManager.richPresenceEnabled,
+                        dataStoreManager.discordToken,
+                    ) { enabled, token ->
+                        enabled == TRUE && token.isNotBlank()
+                    }.distinctUntilChanged()
+                        .collectLatest { shouldRun ->
+                            if (shouldRun && discordRPC == null) {
                                 discordRPC = DiscordRPC(dataStoreManager.discordToken.first())
                                 nowPlayingState.value.songEntity?.let { song ->
                                     updateDiscordRpc(song)
                                 }
-                            } else if (it == FALSE) {
+                            } else if (!shouldRun) {
                                 if (discordRPC?.isRpcRunning() == true) {
                                     discordRPC?.closeRPC()
                                 }

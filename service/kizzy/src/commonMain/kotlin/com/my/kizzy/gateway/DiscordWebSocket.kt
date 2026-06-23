@@ -140,12 +140,20 @@ open class DiscordWebSocket(
         heartbeatJob?.cancel()
         connected = false
         val close = websocket?.closeReason?.await()
-        Logger.w(TAG, "Gateway closed with code: ${close?.code}, reason: ${close?.message}, can_reconnect: ${close?.code?.toInt() == 4000}")
-        if (close?.code?.toInt() == 4000) {
-            delay(200.milliseconds)
-            connect()
-        } else {
-            scheduleReconnection()
+        val code = close?.code?.toInt() ?: -1
+        Logger.w(TAG, "Gateway closed with code: $code, reason: ${close?.message}")
+        when (code) {
+            // Generic/expected close → reconnect immediately.
+            4000 -> {
+                delay(200.milliseconds)
+                connect()
+            }
+            // Authentication / identify failures (blank or invalid token, disallowed intents, …) are
+            // NOT recoverable: reconnecting just loops forever and drains the battery (issue #2157).
+            in NON_RECOVERABLE_CLOSE_CODES -> {
+                Logger.e(TAG, "Gateway closed with non-recoverable code $code — not reconnecting.")
+            }
+            else -> scheduleReconnection()
         }
     }
 
@@ -319,5 +327,11 @@ open class DiscordWebSocket(
     companion object {
         private val INITIAL_RECONNECT_DELAY = 1.seconds
         private val MAX_RECONNECT_DELAY = 60.seconds
+
+        // Discord gateway close codes signalling an unrecoverable auth/identify error. Reconnecting on
+        // these would loop indefinitely with the same bad credentials (see issue #2157):
+        // 4004 auth failed, 4010 invalid shard, 4011 sharding required, 4012 invalid API version,
+        // 4013 invalid intent(s), 4014 disallowed intent(s).
+        private val NON_RECOVERABLE_CLOSE_CODES = setOf(4004, 4010, 4011, 4012, 4013, 4014)
     }
 }
