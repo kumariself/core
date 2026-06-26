@@ -61,6 +61,10 @@ fun parseRichSyncLyrics(data: String): Lyrics {
 
     // Regex to match [MM:SS.mm] format (flexible with 1-2 digits)
     val regex = Regex("\\[(\\d{1,2}):(\\d{2})\\.(\\d{2,3})\\](.+)")
+    // Strip a leading voice marker (e.g. "v1:", "v2:") that some lyrics
+    // providers prepend before the first word timestamp, so it doesn't leak
+    // into the word content and stick to the first word.
+    val voiceMarkerRegex = Regex("""^v\d+:""")
     val linesLyrics = ArrayList<Lyrics.LyricsX.Line>()
 
     lyricsLines.forEachIndexed { index, line ->
@@ -77,7 +81,11 @@ fun parseRichSyncLyrics(data: String): Lyrics {
             val timeInMillis = minutes * 60_000L + seconds * 1000L + millisPart
 
             // Keep the rich sync content as-is (with <MM:SS.mm> word format)
-            val content = matchResult.groupValues[4].trimStart()
+            val content =
+                matchResult.groupValues[4]
+                    .trimStart()
+                    .replace(voiceMarkerRegex, "")
+                    .trimStart()
 
             if (content.isNotBlank()) {
                 linesLyrics.add(
