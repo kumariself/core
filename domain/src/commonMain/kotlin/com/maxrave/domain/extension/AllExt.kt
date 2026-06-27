@@ -18,9 +18,14 @@ import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
+import kotlin.time.Instant
 
 @OptIn(ExperimentalTime::class)
 fun now(): LocalDateTime = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
+
+@OptIn(ExperimentalTime::class)
+fun epochMillisToLocalDateTime(epochMillis: Long): LocalDateTime =
+    Instant.fromEpochMilliseconds(epochMillis).toLocalDateTime(TimeZone.currentSystemDefault())
 
 fun LocalDateTime.isBefore(other: LocalDateTime): Boolean = this < other
 

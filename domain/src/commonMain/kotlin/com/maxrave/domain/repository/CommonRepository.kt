@@ -24,6 +24,8 @@ interface CommonRepository {
 
     suspend fun getAllNotifications(): Flow<List<NotificationEntity>?>
 
+    suspend fun isNotificationExists(link: String): Boolean
+
     suspend fun deleteNotification(id: Long)
 
     suspend fun writeTextToFile(text: String, filePath: String): Boolean

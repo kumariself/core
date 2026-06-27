@@ -464,6 +464,8 @@ internal class LocalDataSource(
 
     suspend fun getAllNotification() = databaseDao.getAllNotification()
 
+    suspend fun countNotificationByLink(link: String) = databaseDao.countNotificationByLink(link)
+
     suspend fun deleteNotification(id: Long) = databaseDao.deleteNotification(id)
 
     suspend fun getTranslatedLyrics(

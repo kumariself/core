@@ -304,6 +304,11 @@ internal class CommonRepositoryImpl(
             emit(localDataSource.getAllNotification())
         }.flowOn(Dispatchers.IO)
 
+    override suspend fun isNotificationExists(link: String): Boolean =
+        withContext(Dispatchers.IO) {
+            localDataSource.countNotificationByLink(link) > 0
+        }
+
     override suspend fun deleteNotification(id: Long) =
         withContext(Dispatchers.IO) {
             localDataSource.deleteNotification(id)

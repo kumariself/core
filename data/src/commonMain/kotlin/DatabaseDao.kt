@@ -749,6 +749,9 @@ interface DatabaseDao {
     @Query("SELECT * FROM notification ORDER BY time DESC LIMIT 100")
     suspend fun getAllNotification(): List<NotificationEntity>
 
+    @Query("SELECT COUNT(*) FROM notification WHERE link = :link")
+    suspend fun countNotificationByLink(link: String): Int
+
     @Query("DELETE FROM notification WHERE id = :id")
     suspend fun deleteNotification(id: Long)
 
