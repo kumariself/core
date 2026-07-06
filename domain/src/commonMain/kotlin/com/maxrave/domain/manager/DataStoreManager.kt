@@ -319,6 +319,21 @@ interface DataStoreManager {
 
     suspend fun setEnableLiquidGlass(enable: Boolean)
 
+    /** One of [THEME_MODE_SYSTEM], [THEME_MODE_DARK], [THEME_MODE_LIGHT]. */
+    val themeMode: Flow<String>
+
+    suspend fun setThemeMode(mode: String)
+
+    /** One of [THEME_COLOR_DEFAULT], [THEME_COLOR_WALLPAPER], [THEME_COLOR_CUSTOM]. */
+    val themeColorSource: Flow<String>
+
+    suspend fun setThemeColorSource(source: String)
+
+    /** Seed color for the custom theme as an 8-digit ARGB hex string (e.g. "FF8ECAE6"). */
+    val customThemeColor: Flow<String>
+
+    suspend fun setCustomThemeColor(argbHex: String)
+
     val explicitContentEnabled: Flow<String>
 
     suspend fun setExplicitContentEnabled(enabled: Boolean)
@@ -377,6 +392,16 @@ interface DataStoreManager {
 
         const val TRUE = "TRUE"
         const val FALSE = "FALSE"
+
+        const val THEME_MODE_SYSTEM = "SYSTEM"
+        const val THEME_MODE_DARK = "DARK"
+        const val THEME_MODE_LIGHT = "LIGHT"
+
+        const val THEME_COLOR_DEFAULT = "DEFAULT"
+        const val THEME_COLOR_WALLPAPER = "WALLPAPER"
+        const val THEME_COLOR_CUSTOM = "CUSTOM"
+
+        const val DEFAULT_THEME_COLOR_HEX = "FF8ECAE6"
 
         const val CROSSFADE_DURATION_AUTO = 0
 

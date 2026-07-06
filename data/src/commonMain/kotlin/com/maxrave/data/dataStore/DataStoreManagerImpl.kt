@@ -684,6 +684,45 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val themeMode =
+        settingsDataStore.data.map { preferences ->
+            preferences[THEME_MODE] ?: DataStoreManager.THEME_MODE_DARK
+        }
+
+    override suspend fun setThemeMode(mode: String) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[THEME_MODE] = mode
+            }
+        }
+    }
+
+    override val themeColorSource =
+        settingsDataStore.data.map { preferences ->
+            preferences[THEME_COLOR_SOURCE] ?: DataStoreManager.THEME_COLOR_DEFAULT
+        }
+
+    override suspend fun setThemeColorSource(source: String) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[THEME_COLOR_SOURCE] = source
+            }
+        }
+    }
+
+    override val customThemeColor =
+        settingsDataStore.data.map { preferences ->
+            preferences[CUSTOM_THEME_COLOR] ?: DataStoreManager.DEFAULT_THEME_COLOR_HEX
+        }
+
+    override suspend fun setCustomThemeColor(argbHex: String) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[CUSTOM_THEME_COLOR] = argbHex
+            }
+        }
+    }
+
     override val usingProxy =
         settingsDataStore.data.map { preferences ->
             preferences[USING_PROXY] ?: FALSE
@@ -1457,6 +1496,9 @@ internal class DataStoreManagerImpl(
         val HOME_LIMIT = intPreferencesKey("home_limit")
         val CHART_KEY = stringPreferencesKey("chart_key")
         val TRANSLUCENT_BOTTOM_BAR = stringPreferencesKey("translucent_bottom_bar")
+        val THEME_MODE = stringPreferencesKey("theme_mode")
+        val THEME_COLOR_SOURCE = stringPreferencesKey("theme_color_source")
+        val CUSTOM_THEME_COLOR = stringPreferencesKey("custom_theme_color")
         val USING_PROXY = stringPreferencesKey("using_proxy")
         val PROXY_TYPE = stringPreferencesKey("proxy_type")
         val PROXY_HOST = stringPreferencesKey("proxy_host")
