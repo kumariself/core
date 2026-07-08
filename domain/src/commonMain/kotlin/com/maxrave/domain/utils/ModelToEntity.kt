@@ -399,7 +399,7 @@ fun Lyrics.toRichSyncLrcString(): String? {
         val seconds = ((startTimeMs % 60000) / 1000).toString().padStart(2, '0')
         val centiseconds = ((startTimeMs % 1000) / 10).toString().padStart(2, '0')
 
-        "[$minutes:$seconds.$centiseconds] ${line.words}"
+        "[$minutes:$seconds.$centiseconds] ${line.words.replace("  ", " ")}"
     }
 }
 
@@ -413,18 +413,20 @@ fun Lyrics.toSyncedLyrics(): Lyrics {
         return this
     }
     val wordTimingRegex = Regex("""<\d{1,2}:\d{2}\.\d{2,3}>""")
-    val syncedLines = lines.map { line ->
-        val plainWords = line.words
-            .replace(wordTimingRegex, "")
-            .replace("  ", " ")
-            .trim()
-        Line(
-            endTimeMs = line.endTimeMs,
-            startTimeMs = line.startTimeMs,
-            syllables = line.syllables,
-            words = plainWords.ifBlank { "♫" },
-        )
-    }
+    val syncedLines =
+        lines.map { line ->
+            val plainWords =
+                line.words
+                    .replace(wordTimingRegex, "")
+                    .replace("  ", " ")
+                    .trim()
+            Line(
+                endTimeMs = line.endTimeMs,
+                startTimeMs = line.startTimeMs,
+                syllables = line.syllables,
+                words = plainWords.ifBlank { "♫" },
+            )
+        }
     return Lyrics(
         error = this.error,
         lines = syncedLines,
