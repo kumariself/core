@@ -67,4 +67,8 @@ dependencies {
     implementation(libs.media3.datasource.okhttp)
     implementation(libs.okhttp3.logging.interceptor)
     implementation(libs.coroutines.guava)
+
+    // Android Auto (Car App Library media templates)
+    implementation(libs.car.app.core)
+    implementation(libs.car.app.projected)
 }
