@@ -1,3 +1,10 @@
+val isFullBuild: Boolean =
+    try {
+        extra["isFullBuild"] == "true"
+    } catch (e: Exception) {
+        false
+    }
+
 plugins {
     alias(libs.plugins.android.library)
 }
@@ -71,4 +78,11 @@ dependencies {
     // Android Auto (Car App Library media templates)
     implementation(libs.car.app.core)
     implementation(libs.car.app.projected)
+
+    // Google Cast (gated: real SDK for full builds, no-op stub for FOSS builds)
+    if (isFullBuild) {
+        implementation(projects.cast)
+    } else {
+        implementation(projects.castEmpty)
+    }
 }
