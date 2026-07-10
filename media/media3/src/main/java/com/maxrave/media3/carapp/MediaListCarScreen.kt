@@ -2,16 +2,12 @@ package com.maxrave.media3.carapp
 
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
-import androidx.car.app.constraints.ConstraintManager
 import androidx.car.app.model.Action
 import androidx.car.app.model.CarIcon
 import androidx.car.app.model.Header
 import androidx.car.app.model.ItemList
 import androidx.car.app.model.ListTemplate
-import androidx.car.app.model.Row
 import androidx.car.app.model.Template
-import androidx.core.content.ContextCompat
-import androidx.core.graphics.drawable.IconCompat
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.media3.common.MediaItem
@@ -21,6 +17,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.logger.Logger
 import com.maxrave.media3.utils.CoilBitmapLoader
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -42,7 +39,7 @@ import org.koin.core.component.inject
 @UnstableApi
 internal class MediaListCarScreen(
     carContext: CarContext,
-    private val browserFuture: ListenableFuture<MediaBrowser>,
+    private val browserProvider: () -> ListenableFuture<MediaBrowser>,
     private val parentId: String,
     private val screenTitle: String,
 ) : Screen(carContext),
@@ -64,9 +61,9 @@ internal class MediaListCarScreen(
             },
         )
         screenScope.launch {
-            children =
-                runCatching {
-                    browserFuture
+            val items =
+                try {
+                    browserProvider()
                         .await()
                         // The library callback returns whole lists (e.g. 1000 songs) and
                         // media3 rejects results larger than the requested pageSize
@@ -74,36 +71,23 @@ internal class MediaListCarScreen(
                         .await()
                         .value
                         ?.toList()
-                }.onFailure {
-                    Logger.e(TAG, "getChildren($parentId) failed: ${it.message}")
-                }.getOrNull() ?: emptyList()
+                        ?: emptyList()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Logger.e(TAG, "getChildren($parentId) failed: ${e.message}")
+                    emptyList()
+                }
+            children = items
             invalidate()
-            loadArtwork()
+            loadArtworkInto(screenScope, bitmapLoader, items, carContext.listContentLimit(), artwork, TAG) {
+                invalidate()
+            }
         }
         screenScope.launch {
             handler.nowPlaying.collect { invalidate() }
         }
     }
-
-    private fun loadArtwork() {
-        children.orEmpty().take(maxRows()).forEach { item ->
-            val uri = item.mediaMetadata.artworkUri ?: return@forEach
-            screenScope.launch {
-                runCatching {
-                    val bitmap = bitmapLoader.loadBitmap(uri).await()
-                    artwork[item.mediaId] = CarIcon.Builder(IconCompat.createWithBitmap(bitmap)).build()
-                    invalidate()
-                }
-            }
-        }
-    }
-
-    private fun maxRows(): Int =
-        runCatching {
-            carContext
-                .getCarService(ConstraintManager::class.java)
-                .getContentLimit(ConstraintManager.CONTENT_LIMIT_TYPE_LIST)
-        }.getOrDefault(DEFAULT_LIST_LIMIT)
 
     override fun onGetTemplate(): Template {
         val loaded = children
@@ -119,8 +103,7 @@ internal class MediaListCarScreen(
                             screenManager.popToRoot()
                             screenManager.push(NowPlayingCarScreen(carContext))
                         }.build(),
-                )
-                .setHeader(
+                ).setHeader(
                     Header
                         .Builder()
                         .setStartHeaderAction(Action.BACK)
@@ -130,67 +113,33 @@ internal class MediaListCarScreen(
         if (loaded == null) {
             return templateBuilder.setLoading(true).build()
         }
+        val nowPlayingId = handler.nowPlaying.value?.mediaId
         val itemListBuilder =
             ItemList
                 .Builder()
                 .setNoItemsMessage("Nothing to show")
-        loaded.take(maxRows()).forEach { item ->
-            itemListBuilder.addItem(buildRow(item))
+        loaded.take(carContext.listContentLimit()).forEach { item ->
+            val browsable = item.mediaMetadata.isBrowsable == true
+            // Browse media ids are paths ("song/{videoId}"); nowPlaying uses the bare videoId
+            val isPlaying = !browsable && item.mediaId.substringAfterLast('/') == nowPlayingId
+            itemListBuilder.addItem(
+                carContext.mediaRow(item, artwork[item.mediaId], isPlaying) {
+                    if (browsable) {
+                        val title = item.mediaMetadata.title?.toString().orEmpty().ifBlank { item.mediaId }
+                        screenManager.push(MediaListCarScreen(carContext, browserProvider, item.mediaId, title))
+                    } else {
+                        playViaBrowser(carContext, browserProvider(), item, TAG)
+                        // Land back on the playback screen, matching the classic surface
+                        screenManager.popToRoot()
+                        screenManager.push(NowPlayingCarScreen(carContext))
+                    }
+                },
+            )
         }
         return templateBuilder.setSingleList(itemListBuilder.build()).build()
     }
 
-    private fun buildRow(item: MediaItem): Row {
-        val metadata = item.mediaMetadata
-        val title = metadata.title?.toString()?.takeIf { it.isNotBlank() } ?: item.mediaId
-        val browsable = metadata.isBrowsable == true
-        // Browse media ids are paths ("song/{videoId}"); nowPlaying uses the bare videoId
-        val isPlaying =
-            !browsable &&
-                item.mediaId.substringAfterLast('/') == handler.nowPlaying.value?.mediaId
-        return Row
-            .Builder()
-            .setTitle(title)
-            .apply {
-                val subtitle = metadata.subtitle?.toString().orEmpty()
-                if (isPlaying) {
-                    addText(carContext.nowPlayingText(subtitle))
-                } else if (subtitle.isNotBlank()) {
-                    addText(subtitle)
-                }
-                artwork[item.mediaId]?.let { setImage(it) }
-                setBrowsable(browsable)
-            }.setOnClickListener {
-                if (browsable) {
-                    // Host allows at most 5 stacked screens; the deepest classic
-                    // path (library > home > shelf > playlist) plus playback fits
-                    screenManager.push(MediaListCarScreen(carContext, browserFuture, item.mediaId, title))
-                } else {
-                    playItem(item)
-                }
-            }.build()
-    }
-
-    private fun playItem(item: MediaItem) {
-        // Runs on the future's executor, not screenScope: navigating below pops
-        // this screen and cancels its scope before a coroutine could finish
-        browserFuture.addListener({
-            runCatching {
-                val browser = browserFuture.get()
-                browser.setMediaItem(item)
-                browser.prepare()
-                browser.play()
-            }.onFailure {
-                Logger.e(TAG, "playItem(${item.mediaId}) failed: ${it.message}")
-            }
-        }, ContextCompat.getMainExecutor(carContext))
-        // Land back on the playback screen, matching the classic surface
-        screenManager.popToRoot()
-        screenManager.push(NowPlayingCarScreen(carContext))
-    }
-
     private companion object {
         private const val TAG = "MediaListCarScreen"
-        private const val DEFAULT_LIST_LIMIT = 100
     }
 }

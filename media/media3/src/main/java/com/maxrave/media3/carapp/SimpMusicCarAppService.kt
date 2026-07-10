@@ -15,6 +15,7 @@ import androidx.car.app.validation.HostValidator
 import androidx.core.content.ContextCompat
 import androidx.core.os.BundleCompat
 import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaBrowser
@@ -71,7 +72,7 @@ internal class SimpMusicCarSession : Session() {
         // Library tab root sits under the playback screen so BACK lands on
         // browse, matching the classic media surface
         carContext.getCarService(ScreenManager::class.java).push(
-            LibraryTabCarScreen(carContext, ensureBrowser()),
+            LibraryTabCarScreen(carContext, ::ensureBrowser),
         )
         return NowPlayingCarScreen(carContext)
     }
@@ -101,6 +102,18 @@ internal class SimpMusicCarSession : Session() {
                 .Builder(
                     carContext,
                     SessionToken(carContext, ComponentName(carContext, SimpleMediaService::class.java)),
+                ).setListener(
+                    object : MediaBrowser.Listener {
+                        override fun onDisconnected(controller: MediaController) {
+                            // Media service died mid-drive: rebuild the browser and hand
+                            // the host a fresh token, else it keeps rendering a stale one
+                            browserFuture?.let { MediaController.releaseFuture(it) }
+                            browserFuture = null
+                            if (lifecycle.currentState.isAtLeast(Lifecycle.State.CREATED)) {
+                                connectAndRegisterPlaybackToken()
+                            }
+                        }
+                    },
                 ).buildAsync()
                 .also { browserFuture = it }
 

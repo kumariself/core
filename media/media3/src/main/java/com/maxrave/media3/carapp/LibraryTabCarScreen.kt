@@ -2,18 +2,15 @@ package com.maxrave.media3.carapp
 
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
-import androidx.car.app.constraints.ConstraintManager
 import androidx.car.app.model.Action
 import androidx.car.app.model.CarColor
 import androidx.car.app.model.CarIcon
 import androidx.car.app.model.ItemList
 import androidx.car.app.model.ListTemplate
-import androidx.car.app.model.Row
 import androidx.car.app.model.Tab
 import androidx.car.app.model.TabContents
 import androidx.car.app.model.TabTemplate
 import androidx.car.app.model.Template
-import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.IconCompat
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -26,6 +23,7 @@ import com.maxrave.logger.Logger
 import com.maxrave.media3.R
 import com.maxrave.media3.service.callback.SimpleMediaSessionCallback
 import com.maxrave.media3.utils.CoilBitmapLoader
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -36,7 +34,7 @@ import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 
 /**
- * Library root recreating the classic Android Auto tab bar (Home / Songs /
+ * Library root recreating the classic Android Auto tab bar (Home / Downloaded /
  * Favorites / Playlists). Each tab renders the same children the classic
  * browse tree served through [SimpleMediaSessionCallback]; browsable rows
  * push [MediaListCarScreen] for deeper levels.
@@ -44,7 +42,7 @@ import org.koin.core.component.inject
 @UnstableApi
 internal class LibraryTabCarScreen(
     carContext: CarContext,
-    private val browserFuture: ListenableFuture<MediaBrowser>,
+    private val browserProvider: () -> ListenableFuture<MediaBrowser>,
 ) : Screen(carContext),
     KoinComponent {
     private val handler: MediaPlayerHandler by inject()
@@ -55,6 +53,10 @@ internal class LibraryTabCarScreen(
 
     // key absent = not requested yet; null value = loading; list = loaded
     private val tabChildren = mutableMapOf<String, List<MediaItem>?>()
+
+    // This screen lives for the whole car session — a transient failure must
+    // not leave a tab empty forever, so re-selecting a failed tab retries
+    private val failedTabs = mutableSetOf<String>()
     private val artwork = mutableMapOf<String, CarIcon>()
 
     init {
@@ -76,42 +78,30 @@ internal class LibraryTabCarScreen(
         tabChildren[tabId] = null
         screenScope.launch {
             val items =
-                runCatching {
-                    browserFuture
+                try {
+                    browserProvider()
                         .await()
+                        // The library callback returns whole lists and media3 rejects
+                        // results larger than the requested pageSize
                         .getChildren(tabId, 0, Int.MAX_VALUE, null)
                         .await()
                         .value
                         ?.toList()
-                }.onFailure {
-                    Logger.e(TAG, "getChildren($tabId) failed: ${it.message}")
-                }.getOrNull() ?: emptyList()
+                        ?: emptyList()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Logger.e(TAG, "getChildren($tabId) failed: ${e.message}")
+                    failedTabs.add(tabId)
+                    emptyList()
+                }
             tabChildren[tabId] = items
             invalidate()
-            loadArtwork(items)
-        }
-    }
-
-    private fun loadArtwork(items: List<MediaItem>) {
-        items.take(maxRows()).forEach { item ->
-            val uri = item.mediaMetadata.artworkUri ?: return@forEach
-            if (artwork.containsKey(item.mediaId)) return@forEach
-            screenScope.launch {
-                runCatching {
-                    val bitmap = bitmapLoader.loadBitmap(uri).await()
-                    artwork[item.mediaId] = CarIcon.Builder(IconCompat.createWithBitmap(bitmap)).build()
-                    invalidate()
-                }
+            loadArtworkInto(screenScope, bitmapLoader, items, carContext.listContentLimit(), artwork, TAG) {
+                invalidate()
             }
         }
     }
-
-    private fun maxRows(): Int =
-        runCatching {
-            carContext
-                .getCarService(ConstraintManager::class.java)
-                .getContentLimit(ConstraintManager.CONTENT_LIMIT_TYPE_LIST)
-        }.getOrDefault(DEFAULT_LIST_LIMIT)
 
     override fun onGetTemplate(): Template {
         val templateBuilder =
@@ -119,6 +109,9 @@ internal class LibraryTabCarScreen(
                 .Builder(
                     object : TabTemplate.TabCallback {
                         override fun onTabSelected(tabContentId: String) {
+                            if (failedTabs.remove(tabContentId)) {
+                                tabChildren.remove(tabContentId)
+                            }
                             activeTabId = tabContentId
                             loadTab(tabContentId)
                             invalidate()
@@ -148,8 +141,8 @@ internal class LibraryTabCarScreen(
         val listBuilder =
             ListTemplate
                 .Builder()
-                // List templates allow up to 2 floating actions: search on top of
-                // the host-rendered minimized now-playing control panel (MFT-1)
+                // List templates allow up to 2 floating actions: search on top
+                // of the equalizer panel (MFT-1)
                 .addAction(
                     Action
                         .Builder()
@@ -161,7 +154,7 @@ internal class LibraryTabCarScreen(
                         // FAB constraint: custom actions must declare a background color
                         .setBackgroundColor(CarColor.PRIMARY)
                         .setOnClickListener {
-                            screenManager.push(SearchCarScreen(carContext, browserFuture))
+                            screenManager.push(SearchCarScreen(carContext, browserProvider))
                         }.build(),
                 ).addAction(
                     // Standard identity so the host draws the equalizer panel;
@@ -173,53 +166,26 @@ internal class LibraryTabCarScreen(
                         }.build(),
                 )
         val children = tabChildren[activeTabId] ?: return listBuilder.setLoading(true).build()
+        val nowPlayingId = handler.nowPlaying.value?.mediaId
         val itemListBuilder = ItemList.Builder().setNoItemsMessage("Nothing to show")
-        children.take(maxRows()).forEach { itemListBuilder.addItem(buildRow(it)) }
+        children.take(carContext.listContentLimit()).forEach { item ->
+            val browsable = item.mediaMetadata.isBrowsable == true
+            // Browse media ids are paths ("song/{videoId}"); nowPlaying uses the bare videoId
+            val isPlaying = !browsable && item.mediaId.substringAfterLast('/') == nowPlayingId
+            itemListBuilder.addItem(
+                carContext.mediaRow(item, artwork[item.mediaId], isPlaying) {
+                    if (browsable) {
+                        val title = item.mediaMetadata.title?.toString().orEmpty().ifBlank { item.mediaId }
+                        screenManager.push(MediaListCarScreen(carContext, browserProvider, item.mediaId, title))
+                    } else {
+                        playViaBrowser(carContext, browserProvider(), item, TAG)
+                        // This screen is the stack root, so the playback screen goes on top
+                        screenManager.push(NowPlayingCarScreen(carContext))
+                    }
+                },
+            )
+        }
         return listBuilder.setSingleList(itemListBuilder.build()).build()
-    }
-
-    private fun buildRow(item: MediaItem): Row {
-        val metadata = item.mediaMetadata
-        val title = metadata.title?.toString()?.takeIf { it.isNotBlank() } ?: item.mediaId
-        val browsable = metadata.isBrowsable == true
-        // Browse media ids are paths ("song/{videoId}"); nowPlaying uses the bare videoId
-        val isPlaying =
-            !browsable &&
-                item.mediaId.substringAfterLast('/') == handler.nowPlaying.value?.mediaId
-        return Row
-            .Builder()
-            .setTitle(title)
-            .apply {
-                val subtitle = metadata.subtitle?.toString().orEmpty()
-                if (isPlaying) {
-                    addText(carContext.nowPlayingText(subtitle))
-                } else if (subtitle.isNotBlank()) {
-                    addText(subtitle)
-                }
-                artwork[item.mediaId]?.let { setImage(it) }
-                setBrowsable(browsable)
-            }.setOnClickListener {
-                if (browsable) {
-                    screenManager.push(MediaListCarScreen(carContext, browserFuture, item.mediaId, title))
-                } else {
-                    playItem(item)
-                }
-            }.build()
-    }
-
-    private fun playItem(item: MediaItem) {
-        browserFuture.addListener({
-            runCatching {
-                val browser = browserFuture.get()
-                browser.setMediaItem(item)
-                browser.prepare()
-                browser.play()
-            }.onFailure {
-                Logger.e(TAG, "playItem(${item.mediaId}) failed: ${it.message}")
-            }
-        }, ContextCompat.getMainExecutor(carContext))
-        // This screen is the stack root, so the playback screen goes right on top
-        screenManager.push(NowPlayingCarScreen(carContext))
     }
 
     private data class LibraryTab(
@@ -230,7 +196,6 @@ internal class LibraryTabCarScreen(
 
     private companion object {
         private const val TAG = "LibraryTabCarScreen"
-        private const val DEFAULT_LIST_LIMIT = 100
         private val TABS =
             listOf(
                 LibraryTab(SimpleMediaSessionCallback.HOME, R.string.home, R.drawable.home_android_auto),

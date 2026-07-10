@@ -2,7 +2,6 @@ package com.maxrave.media3.carapp
 
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
-import androidx.car.app.constraints.ConstraintManager
 import androidx.car.app.model.Action
 import androidx.car.app.model.Header
 import androidx.car.app.model.ItemList
@@ -53,12 +52,7 @@ internal class QueueCarScreen(
         val queue = handler.queueData.value?.data
         val tracks = queue?.listTracks.orEmpty()
         val nowPlayingId = handler.nowPlaying.value?.mediaId
-        val maxRows =
-            runCatching {
-                carContext
-                    .getCarService(ConstraintManager::class.java)
-                    .getContentLimit(ConstraintManager.CONTENT_LIMIT_TYPE_LIST)
-            }.getOrDefault(DEFAULT_LIST_LIMIT)
+        val maxRows = carContext.listContentLimit()
 
         val currentIndex = tracks.indexOfFirst { it.videoId == nowPlayingId }.coerceAtLeast(0)
         // Window the list around the playing track when the queue exceeds the host row limit
@@ -109,9 +103,5 @@ internal class QueueCarScreen(
                     .build(),
             ).setSingleList(itemListBuilder.build())
             .build()
-    }
-
-    private companion object {
-        private const val DEFAULT_LIST_LIMIT = 100
     }
 }

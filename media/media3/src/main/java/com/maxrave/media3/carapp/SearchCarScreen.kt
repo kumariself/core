@@ -2,15 +2,11 @@ package com.maxrave.media3.carapp
 
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
-import androidx.car.app.constraints.ConstraintManager
 import androidx.car.app.model.Action
 import androidx.car.app.model.CarIcon
 import androidx.car.app.model.ItemList
-import androidx.car.app.model.Row
 import androidx.car.app.model.SearchTemplate
 import androidx.car.app.model.Template
-import androidx.core.content.ContextCompat
-import androidx.core.graphics.drawable.IconCompat
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.media3.common.MediaItem
@@ -20,6 +16,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.logger.Logger
 import com.maxrave.media3.utils.CoilBitmapLoader
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -40,7 +37,7 @@ import org.koin.core.component.inject
 @UnstableApi
 internal class SearchCarScreen(
     carContext: CarContext,
-    private val browserFuture: ListenableFuture<MediaBrowser>,
+    private val browserProvider: () -> ListenableFuture<MediaBrowser>,
 ) : Screen(carContext),
     KoinComponent {
     private val handler: MediaPlayerHandler by inject()
@@ -86,8 +83,19 @@ internal class SearchCarScreen(
             return builder.setLoading(true).build()
         }
         results?.let { items ->
+            val nowPlayingId = handler.nowPlaying.value?.mediaId
             val itemListBuilder = ItemList.Builder().setNoItemsMessage("No results")
-            items.take(maxRows()).forEach { itemListBuilder.addItem(buildRow(it)) }
+            items.take(carContext.listContentLimit()).forEach { item ->
+                val isPlaying = item.mediaId.substringAfterLast('/') == nowPlayingId
+                itemListBuilder.addItem(
+                    carContext.mediaRow(item, artwork[item.mediaId], isPlaying) {
+                        playViaBrowser(carContext, browserProvider(), item, TAG)
+                        // Land back on the playback screen, matching the classic surface
+                        screenManager.popToRoot()
+                        screenManager.push(NowPlayingCarScreen(carContext))
+                    },
+                )
+            }
             builder.setItemList(itemListBuilder.build())
         }
         return builder.build()
@@ -101,83 +109,32 @@ internal class SearchCarScreen(
         searchJob =
             screenScope.launch {
                 val items =
-                    runCatching {
-                        val browser = browserFuture.await()
+                    try {
+                        val browser = browserProvider().await()
                         browser.search(query, null).await()
                         browser
                             .getSearchResult(query, 0, Int.MAX_VALUE, null)
                             .await()
                             .value
                             ?.toList()
-                    }.onFailure {
-                        Logger.e(TAG, "search($query) failed: ${it.message}")
-                    }.getOrNull() ?: emptyList()
+                            ?: emptyList()
+                    } catch (e: CancellationException) {
+                        // Rethrow so a superseded search can't clobber newer results
+                        throw e
+                    } catch (e: Exception) {
+                        Logger.e(TAG, "search($query) failed: ${e.message}")
+                        emptyList()
+                    }
                 searching = false
                 results = items
                 invalidate()
-                loadArtwork(items)
-            }
-    }
-
-    private fun loadArtwork(items: List<MediaItem>) {
-        items.take(maxRows()).forEach { item ->
-            val uri = item.mediaMetadata.artworkUri ?: return@forEach
-            if (artwork.containsKey(item.mediaId)) return@forEach
-            screenScope.launch {
-                runCatching {
-                    val bitmap = bitmapLoader.loadBitmap(uri).await()
-                    artwork[item.mediaId] = CarIcon.Builder(IconCompat.createWithBitmap(bitmap)).build()
+                loadArtworkInto(screenScope, bitmapLoader, items, carContext.listContentLimit(), artwork, TAG) {
                     invalidate()
                 }
             }
-        }
-    }
-
-    private fun maxRows(): Int =
-        runCatching {
-            carContext
-                .getCarService(ConstraintManager::class.java)
-                .getContentLimit(ConstraintManager.CONTENT_LIMIT_TYPE_LIST)
-        }.getOrDefault(DEFAULT_LIST_LIMIT)
-
-    private fun buildRow(item: MediaItem): Row {
-        val metadata = item.mediaMetadata
-        val title = metadata.title?.toString()?.takeIf { it.isNotBlank() } ?: item.mediaId
-        val isPlaying = item.mediaId.substringAfterLast('/') == handler.nowPlaying.value?.mediaId
-        return Row
-            .Builder()
-            .setTitle(title)
-            .apply {
-                val subtitle = metadata.subtitle?.toString().orEmpty()
-                if (isPlaying) {
-                    addText(carContext.nowPlayingText(subtitle))
-                } else if (subtitle.isNotBlank()) {
-                    addText(subtitle)
-                }
-                artwork[item.mediaId]?.let { setImage(it) }
-            }.setOnClickListener {
-                playItem(item)
-            }.build()
-    }
-
-    private fun playItem(item: MediaItem) {
-        browserFuture.addListener({
-            runCatching {
-                val browser = browserFuture.get()
-                browser.setMediaItem(item)
-                browser.prepare()
-                browser.play()
-            }.onFailure {
-                Logger.e(TAG, "playItem(${item.mediaId}) failed: ${it.message}")
-            }
-        }, ContextCompat.getMainExecutor(carContext))
-        // Land back on the playback screen, matching the classic surface
-        screenManager.popToRoot()
-        screenManager.push(NowPlayingCarScreen(carContext))
     }
 
     private companion object {
         private const val TAG = "SearchCarScreen"
-        private const val DEFAULT_LIST_LIMIT = 100
     }
 }
