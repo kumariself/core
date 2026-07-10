@@ -75,12 +75,14 @@ internal class QueueCarScreen(
             itemListBuilder.addItem(
                 Row
                     .Builder()
-                    .setTitle(if (isPlaying) "▶ ${track.title}" else track.title)
+                    .setTitle(track.title)
                     .apply {
-                        track.artists
-                            ?.joinToString(", ") { it.name }
-                            ?.takeIf { it.isNotBlank() }
-                            ?.let { addText(it) }
+                        val artists = track.artists?.joinToString(", ") { it.name }.orEmpty()
+                        if (isPlaying) {
+                            addText(carContext.nowPlayingText(artists))
+                        } else if (artists.isNotBlank()) {
+                            addText(artists)
+                        }
                     }.setOnClickListener {
                         handler.playMediaItemInMediaSource(index)
                     }.build(),
@@ -89,6 +91,16 @@ internal class QueueCarScreen(
 
         return ListTemplate
             .Builder()
+            // Standard identity so the host draws the equalizer panel;
+            // navigating on tap is the app's job via the listener
+            .addAction(
+                Action
+                    .Builder(Action.MEDIA_PLAYBACK)
+                    .setOnClickListener {
+                        // The queue is always pushed from the playback screen
+                        screenManager.pop()
+                    }.build(),
+            )
             .setHeader(
                 Header
                     .Builder()
