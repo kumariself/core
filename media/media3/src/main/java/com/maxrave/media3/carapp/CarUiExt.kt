@@ -1,5 +1,11 @@
 package com.maxrave.media3.carapp
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
+import android.graphics.RectF
 import android.text.SpannableString
 import android.text.Spanned
 import androidx.car.app.CarContext
@@ -22,6 +28,19 @@ import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.launch
 
 private const val DEFAULT_LIST_LIMIT = 100
+private const val ARTWORK_CORNER_RADIUS_FRACTION = 0.1f
+
+/** Hosts offer no rounded-corner image API (only square/circle), so the corners are baked in. */
+private fun Bitmap.withRoundedCorners(): Bitmap {
+    val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(output)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    val radius = minOf(width, height) * ARTWORK_CORNER_RADIUS_FRACTION
+    canvas.drawRoundRect(RectF(0f, 0f, width.toFloat(), height.toFloat()), radius, radius, paint)
+    paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_IN)
+    canvas.drawBitmap(this, 0f, 0f, paint)
+    return output
+}
 
 /** Host row budget for list templates, with a sane fallback. */
 internal fun CarContext.listContentLimit(): Int =
@@ -120,7 +139,8 @@ internal fun loadArtworkInto(
         scope.launch {
             try {
                 val bitmap = bitmapLoader.loadBitmap(uri).await()
-                artwork[item.mediaId] = CarIcon.Builder(IconCompat.createWithBitmap(bitmap)).build()
+                artwork[item.mediaId] =
+                    CarIcon.Builder(IconCompat.createWithBitmap(bitmap.withRoundedCorners())).build()
                 onLoaded()
             } catch (e: CancellationException) {
                 throw e

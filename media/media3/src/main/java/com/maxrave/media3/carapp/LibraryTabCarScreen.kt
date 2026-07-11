@@ -5,8 +5,11 @@ import androidx.car.app.Screen
 import androidx.car.app.model.Action
 import androidx.car.app.model.CarColor
 import androidx.car.app.model.CarIcon
+import androidx.car.app.model.GridItem
+import androidx.car.app.model.GridSection
 import androidx.car.app.model.ItemList
 import androidx.car.app.model.ListTemplate
+import androidx.car.app.model.SectionedItemTemplate
 import androidx.car.app.model.Tab
 import androidx.car.app.model.TabContents
 import androidx.car.app.model.TabTemplate
@@ -28,6 +31,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.launch
 import org.koin.core.component.KoinComponent
@@ -35,9 +39,10 @@ import org.koin.core.component.inject
 
 /**
  * Library root recreating the classic Android Auto tab bar (Home / Downloaded /
- * Favorites / Playlists). Each tab renders the same children the classic
- * browse tree served through [SimpleMediaSessionCallback]; browsable rows
- * push [MediaListCarScreen] for deeper levels.
+ * Favorites / Playlists). The Home tab renders each classic shelf as a titled
+ * [GridSection] inside a [SectionedItemTemplate]; the other tabs stay as flat
+ * lists. All content comes from the same classic browse tree served through
+ * [SimpleMediaSessionCallback]; browsable items push [MediaListCarScreen].
  */
 @UnstableApi
 internal class LibraryTabCarScreen(
@@ -51,13 +56,18 @@ internal class LibraryTabCarScreen(
 
     private var activeTabId: String = SimpleMediaSessionCallback.HOME
 
-    // key absent = not requested yet; null value = loading; list = loaded
+    // List tabs — key absent = not requested yet; null value = loading; list = loaded
     private val tabChildren = mutableMapOf<String, List<MediaItem>?>()
+
+    // Home tab — shelf node paired with its children; null = not loaded yet
+    private var homeShelves: List<Pair<MediaItem, List<MediaItem>>>? = null
+    private var homeLoading = false
 
     // This screen lives for the whole car session — a transient failure must
     // not leave a tab empty forever, so re-selecting a failed tab retries
     private val failedTabs = mutableSetOf<String>()
     private val artwork = mutableMapOf<String, CarIcon>()
+    private var invalidatePending = false
 
     init {
         lifecycle.addObserver(
@@ -67,9 +77,67 @@ internal class LibraryTabCarScreen(
                 }
             },
         )
-        loadTab(activeTabId)
+        loadHomeShelves()
         screenScope.launch {
             handler.nowPlaying.collect { invalidate() }
+        }
+    }
+
+    /**
+     * The Home grid can carry ~100 artworks; refreshing per image would flood
+     * the host with full-template payloads, so arrivals coalesce into one
+     * invalidate per batch window.
+     */
+    private fun requestInvalidate() {
+        if (invalidatePending) return
+        invalidatePending = true
+        screenScope.launch {
+            delay(ARTWORK_INVALIDATE_BATCH_MS)
+            invalidatePending = false
+            invalidate()
+        }
+    }
+
+    private fun loadHomeShelves() {
+        if (homeShelves != null || homeLoading) return
+        homeLoading = true
+        screenScope.launch {
+            val shelves =
+                try {
+                    val browser = browserProvider().await()
+                    browser
+                        .getChildren(SimpleMediaSessionCallback.HOME, 0, Int.MAX_VALUE, null)
+                        .await()
+                        .value
+                        ?.toList()
+                        .orEmpty()
+                        .filter { it.mediaMetadata.isBrowsable == true }
+                        .map { shelf ->
+                            // Second level reads the callback's in-memory home cache — no extra network
+                            val children =
+                                browser
+                                    .getChildren(shelf.mediaId, 0, Int.MAX_VALUE, null)
+                                    .await()
+                                    .value
+                                    ?.toList()
+                                    .orEmpty()
+                            shelf to children.take(MAX_GRID_ITEMS_PER_SECTION)
+                        }.filter { it.second.isNotEmpty() }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Logger.e(TAG, "loadHomeShelves failed: ${e.message}")
+                    failedTabs.add(SimpleMediaSessionCallback.HOME)
+                    emptyList()
+                }
+            homeShelves = shelves
+            homeLoading = false
+            invalidate()
+            shelves.forEach { (_, items) ->
+                loadArtworkInto(screenScope, bitmapLoader, items, MAX_GRID_ITEMS_PER_SECTION, artwork, TAG) {
+                    requestInvalidate()
+                }
+            }
         }
     }
 
@@ -98,7 +166,7 @@ internal class LibraryTabCarScreen(
             tabChildren[tabId] = items
             invalidate()
             loadArtworkInto(screenScope, bitmapLoader, items, carContext.listContentLimit(), artwork, TAG) {
-                invalidate()
+                requestInvalidate()
             }
         }
     }
@@ -111,9 +179,16 @@ internal class LibraryTabCarScreen(
                         override fun onTabSelected(tabContentId: String) {
                             if (failedTabs.remove(tabContentId)) {
                                 tabChildren.remove(tabContentId)
+                                if (tabContentId == SimpleMediaSessionCallback.HOME) {
+                                    homeShelves = null
+                                }
                             }
                             activeTabId = tabContentId
-                            loadTab(tabContentId)
+                            if (tabContentId == SimpleMediaSessionCallback.HOME) {
+                                loadHomeShelves()
+                            } else {
+                                loadTab(tabContentId)
+                            }
                             invalidate()
                         }
                     },
@@ -131,40 +206,92 @@ internal class LibraryTabCarScreen(
                     ).build(),
             )
         }
+        val content =
+            if (activeTabId == SimpleMediaSessionCallback.HOME) {
+                buildHomeSections()
+            } else {
+                buildActiveTabList()
+            }
         return templateBuilder
-            .setTabContents(TabContents.Builder(buildActiveTabList()).build())
+            .setTabContents(TabContents.Builder(content).build())
             .setActiveTabContentId(activeTabId)
             .build()
+    }
+
+    /** Home: each classic shelf becomes a titled grid section. */
+    private fun buildHomeSections(): Template {
+        val shelves = homeShelves
+        if (shelves == null) {
+            return SectionedItemTemplate
+                .Builder()
+                .addAction(searchFab())
+                .addAction(nowPlayingFab())
+                .setLoading(true)
+                .build()
+        }
+        if (shelves.isEmpty()) {
+            // SectionedItemTemplate has no empty-state; fall back to a plain list message
+            return ListTemplate
+                .Builder()
+                .addAction(searchFab())
+                .addAction(nowPlayingFab())
+                .setSingleList(ItemList.Builder().setNoItemsMessage("Nothing to show").build())
+                .build()
+        }
+        val builder =
+            SectionedItemTemplate
+                .Builder()
+                .addAction(searchFab())
+                .addAction(nowPlayingFab())
+        shelves.forEach { (shelf, items) ->
+            val section =
+                GridSection
+                    .Builder()
+                    // Spotify-sized tiles; anything smaller renders as a dense mosaic
+                    .setItemSize(GridSection.ITEM_SIZE_EXTRA_LARGE)
+                    .setTitle(shelf.mediaMetadata.title?.toString().orEmpty().ifBlank { " " })
+            items.forEach { item -> section.addItem(buildGridItem(item)) }
+            builder.addSection(section.build())
+        }
+        return builder.build()
+    }
+
+    private fun buildGridItem(item: MediaItem): GridItem {
+        val metadata = item.mediaMetadata
+        val browsable = metadata.isBrowsable == true
+        val title = metadata.title?.toString().orEmpty().ifBlank { item.mediaId }
+        // GridItem requires an image at build time — placeholder until artwork lands
+        val image =
+            artwork[item.mediaId]
+                ?: CarIcon
+                    .Builder(IconCompat.createWithResource(carContext, R.drawable.baseline_album_24))
+                    .build()
+        return GridItem
+            .Builder()
+            .setTitle(title)
+            .apply {
+                (metadata.subtitle ?: metadata.artist)
+                    ?.toString()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { setText(it) }
+            }.setImage(image, GridItem.IMAGE_TYPE_LARGE)
+            .setOnClickListener {
+                if (browsable) {
+                    screenManager.push(MediaListCarScreen(carContext, browserProvider, item.mediaId, title))
+                } else {
+                    playViaBrowser(carContext, browserProvider(), item, TAG)
+                    // This screen is the stack root, so the playback screen goes on top
+                    screenManager.push(NowPlayingCarScreen(carContext))
+                }
+            }.build()
     }
 
     private fun buildActiveTabList(): ListTemplate {
         val listBuilder =
             ListTemplate
                 .Builder()
-                // List templates allow up to 2 floating actions: search on top
-                // of the equalizer panel (MFT-1)
-                .addAction(
-                    Action
-                        .Builder()
-                        .setIcon(
-                            CarIcon
-                                .Builder(IconCompat.createWithResource(carContext, R.drawable.ic_car_search))
-                                .build(),
-                        )
-                        // FAB constraint: custom actions must declare a background color
-                        .setBackgroundColor(CarColor.PRIMARY)
-                        .setOnClickListener {
-                            screenManager.push(SearchCarScreen(carContext, browserProvider))
-                        }.build(),
-                ).addAction(
-                    // Standard identity so the host draws the equalizer panel;
-                    // navigating on tap is the app's job via the listener
-                    Action
-                        .Builder(Action.MEDIA_PLAYBACK)
-                        .setOnClickListener {
-                            screenManager.push(NowPlayingCarScreen(carContext))
-                        }.build(),
-                )
+                .addAction(searchFab())
+                .addAction(nowPlayingFab())
         val children = tabChildren[activeTabId] ?: return listBuilder.setLoading(true).build()
         val nowPlayingId = handler.nowPlaying.value?.mediaId
         val itemListBuilder = ItemList.Builder().setNoItemsMessage("Nothing to show")
@@ -188,6 +315,31 @@ internal class LibraryTabCarScreen(
         return listBuilder.setSingleList(itemListBuilder.build()).build()
     }
 
+    // List templates allow up to 2 floating actions: search on top of the
+    // equalizer panel (MFT-1)
+    private fun searchFab(): Action =
+        Action
+            .Builder()
+            .setIcon(
+                CarIcon
+                    .Builder(IconCompat.createWithResource(carContext, R.drawable.ic_car_search))
+                    .build(),
+            )
+            // FAB constraint: custom actions must declare a background color
+            .setBackgroundColor(CarColor.PRIMARY)
+            .setOnClickListener {
+                screenManager.push(SearchCarScreen(carContext, browserProvider))
+            }.build()
+
+    // Standard identity so the host draws the equalizer panel; navigating on
+    // tap is the app's job via the listener
+    private fun nowPlayingFab(): Action =
+        Action
+            .Builder(Action.MEDIA_PLAYBACK)
+            .setOnClickListener {
+                screenManager.push(NowPlayingCarScreen(carContext))
+            }.build()
+
     private data class LibraryTab(
         val contentId: String,
         val titleRes: Int,
@@ -196,6 +348,8 @@ internal class LibraryTabCarScreen(
 
     private companion object {
         private const val TAG = "LibraryTabCarScreen"
+        private const val MAX_GRID_ITEMS_PER_SECTION = 10
+        private const val ARTWORK_INVALIDATE_BATCH_MS = 300L
         private val TABS =
             listOf(
                 LibraryTab(SimpleMediaSessionCallback.HOME, R.string.home, R.drawable.home_android_auto),
