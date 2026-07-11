@@ -323,14 +323,6 @@ interface DataStoreManager {
 
     suspend fun setExplicitContentEnabled(enabled: Boolean)
 
-    val discordToken: Flow<String>
-
-    suspend fun setDiscordToken(token: String)
-
-    val richPresenceEnabled: Flow<String>
-
-    suspend fun setRichPresenceEnabled(enabled: Boolean)
-
     val localTrackingEnabled: Flow<String>
 
     suspend fun setLocalTrackingEnabled(enabled: Boolean)

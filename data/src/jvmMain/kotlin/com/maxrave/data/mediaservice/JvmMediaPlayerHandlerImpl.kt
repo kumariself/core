@@ -62,10 +62,8 @@ import com.maxrave.domain.utils.toListName
 import com.maxrave.domain.utils.toSongEntity
 import com.maxrave.domain.utils.toTrack
 import com.maxrave.logger.Logger
-import com.my.kizzy.DiscordRPC
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -134,7 +132,6 @@ class JvmMediaPlayerHandlerImpl(
     }
 
     override val player: MediaPlayerInterface = getKoin().get()
-    private var discordRPC: DiscordRPC? = null
     override var onUpdateNotification: (List<GenericCommandButton>) -> Unit = {}
     override var showToast: (ToastType) -> Unit = {}
     override var pushPlayerError: (PlayerError) -> Unit = {}
@@ -404,36 +401,10 @@ class JvmMediaPlayerHandlerImpl(
                         Logger.w(TAG, "Playback current speed: ${player.playbackParameters.speed}, Pitch: ${player.playbackParameters.pitch}")
                     }
                 }
-            val discordRPCEnabledJob =
-                launch {
-                    // Run Rich Presence only when enabled AND logged in (non-blank token); a blank-token
-                    // DiscordRPC loops reconnect forever (issue #2157). Combining both flows also tears
-                    // the RPC down as soon as the token is cleared on logout.
-                    combine(
-                        dataStoreManager.richPresenceEnabled,
-                        dataStoreManager.discordToken,
-                    ) { enabled, token ->
-                        enabled == TRUE && token.isNotBlank()
-                    }.distinctUntilChanged()
-                        .collectLatest { shouldRun ->
-                            if (shouldRun && discordRPC == null) {
-                                discordRPC = DiscordRPC(dataStoreManager.discordToken.first())
-                                nowPlayingState.value.songEntity?.let { song ->
-                                    updateDiscordRpc(song)
-                                }
-                            } else if (!shouldRun) {
-                                if (discordRPC?.isRpcRunning() == true) {
-                                    discordRPC?.closeRPC()
-                                }
-                                discordRPC = null
-                            }
-                        }
-                }
             controlStateJob.join()
             skipSegmentsJob.join()
             playbackJob.join()
             playbackSpeedPitchJob.join()
-            discordRPCEnabledJob.join()
         }
     }
 
@@ -495,10 +466,9 @@ class JvmMediaPlayerHandlerImpl(
                             songEntity = songEntity ?: track?.toSongEntity() ?: mediaItem.toSongEntity(),
                         )
                     }
-                    val song =
-                        songEntity ?: track?.toSongEntity() ?: mediaItem.toSongEntity()
-                    updateDiscordRpc(song)
-                    nypc?.setNowPlaying(
+            val song =
+                songEntity ?: track?.toSongEntity() ?: mediaItem.toSongEntity()
+            nypc?.setNowPlaying(
                         song.title,
                         song.artistName?.joinToString(", ") ?: "",
                         song.albumName ?: "",
@@ -742,9 +712,6 @@ class JvmMediaPlayerHandlerImpl(
                     delay(100)
                     _simpleMediaState.value = SimpleMediaState.Progress(player.currentPosition)
                     updateMacOSElapsedTime()
-                    nowPlayingState.value.songEntity?.let {
-                        updateDiscordRpc(it)
-                    }
                 }
             }
     }
@@ -2152,10 +2119,6 @@ class JvmMediaPlayerHandlerImpl(
         clearMacOSNowPlayingInfo()
         macOSMediaIntegration?.release()
         try {
-            if (discordRPC?.isRpcRunning() == true) {
-                discordRPC?.closeRPC()
-            }
-            discordRPC = null
             // Save state first
             mayBeSaveRecentSong(true)
             mayBeSavePlaybackState()
@@ -2270,14 +2233,10 @@ class JvmMediaPlayerHandlerImpl(
         _controlState.value = _controlState.value.copy(isPlaying = isPlaying)
         if (isPlaying) {
             startProgressUpdate()
-            nowPlayingState.value.songEntity?.let { updateDiscordRpc(it) }
         } else {
             stopProgressUpdate()
             mayBeSaveRecentSong()
             mayBeSavePlaybackState()
-            if (discordRPC?.isRpcRunning() == true) {
-                discordRPC?.closeRPC()
-            }
         }
         updateNextPreviousTrackAvailability()
         updateMacOSPlaybackState(isPlaying)
@@ -2360,17 +2319,6 @@ class JvmMediaPlayerHandlerImpl(
                 ).collect {
                     Logger.d(TAG, "Inserted playback event for ${song.title}: $it")
                 }
-        }
-    }
-
-    private fun updateDiscordRpc(song: SongEntity) {
-        coroutineScope.launch {
-            val progress = getProgress()
-            val duration = getPlayerDuration()
-            val speed = dataStoreManager.playbackSpeed.first()
-            withContext(Dispatchers.IO) {
-                discordRPC?.updateSong(progress, duration, speed, song)
-            }
         }
     }
 
