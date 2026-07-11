@@ -6,10 +6,7 @@ object Logger {
     private val logger = Logger
 
     // Tags suppressed at all log levels. Add a tag here to silence its logs globally.
-    private val mutedTags =
-        setOf(
-            "DiscordWebSocket",
-        )
+    private val mutedTags = emptySet<String>()
 
     private fun isMuted(tag: String): Boolean = tag in mutedTags
 
