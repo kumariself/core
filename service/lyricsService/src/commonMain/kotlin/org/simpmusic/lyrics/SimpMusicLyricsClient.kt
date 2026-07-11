@@ -7,6 +7,7 @@ import io.ktor.client.call.body
 import io.ktor.client.statement.HttpResponse
 import org.simpmusic.lyrics.am.AMArtistResource
 import org.simpmusic.lyrics.am.AMSearchResponse
+import org.simpmusic.lyrics.domain.Lyrics
 import org.simpmusic.lyrics.models.request.LyricsBody
 import org.simpmusic.lyrics.models.request.TranslatedLyricsBody
 import org.simpmusic.lyrics.models.response.BaseResponse
@@ -16,6 +17,11 @@ import org.simpmusic.lyrics.models.response.LyricsResponse
 import org.simpmusic.lyrics.models.response.TranslatedLyricsResponse
 import org.simpmusic.lyrics.parser.parseSyncedLyrics
 import org.simpmusic.lyrics.parser.parseUnsyncedLyrics
+import org.simpmusic.lyrics.providers.KuGou
+import org.simpmusic.lyrics.providers.Paxsenix
+import org.simpmusic.lyrics.providers.Unison
+import org.simpmusic.lyrics.providers.YouLyPlus
+import org.simpmusic.lyrics.providers.parseProviderLyrics
 import kotlin.math.abs
 
 private const val TAG = "SimpMusicLyricsClient"
@@ -153,6 +159,70 @@ class SimpMusicLyricsClient {
                 ).body<BetterLyricsResponse>()
         rs.ttml
     }
+
+    /**
+     * KuGou lyrics (ported from ArchiveTune). Returns synced [Lyrics] or `null`.
+     * [duration] is in seconds, or `-1` when unknown.
+     */
+    suspend fun searchKuGouLyrics(
+        q_track: String,
+        q_artist: String,
+        duration: Int?,
+    ): Result<Lyrics?> =
+        KuGou
+            .getLyrics(q_track, q_artist, duration ?: -1)
+            .map { raw -> parseProviderLyrics(raw) }
+
+    /**
+     * Paxsenix aggregated lyrics (Apple Music / NetEase / Spotify / Musixmatch),
+     * ported from ArchiveTune. [duration] is in seconds, or `-1` when unknown.
+     */
+    suspend fun searchPaxsenixLyrics(
+        q_track: String,
+        q_artist: String,
+        duration: Int?,
+    ): Result<Lyrics?> =
+        Paxsenix
+            .getLyrics(q_track, q_artist, duration ?: -1)
+            .map { raw -> parseProviderLyrics(raw) }
+
+    /**
+     * Unison lyrics (https://unison.boidu.dev), ported from ArchiveTune.
+     * [duration] is in seconds, or `-1` when unknown.
+     */
+    suspend fun searchUnisonLyrics(
+        q_track: String,
+        q_artist: String,
+        duration: Int?,
+        videoId: String? = null,
+        album: String? = null,
+    ): Result<Lyrics?> =
+        Unison
+            .getLyrics(
+                videoId = videoId,
+                title = q_track,
+                artist = q_artist,
+                album = album,
+                durationSeconds = duration ?: -1,
+            ).map { raw -> parseProviderLyrics(raw) }
+
+    /**
+     * YouLyPlus / LyricsPlus lyrics (TTML + word-synced), ported from ArchiveTune.
+     * [duration] is in seconds, or `-1` when unknown.
+     */
+    suspend fun searchYouLyPlusLyrics(
+        q_track: String,
+        q_artist: String,
+        duration: Int?,
+        album: String? = null,
+    ): Result<Lyrics?> =
+        YouLyPlus
+            .getLyrics(
+                title = q_track,
+                artist = q_artist,
+                album = album,
+                durationSeconds = duration ?: -1,
+            ).map { raw -> parseProviderLyrics(raw) }
 
     suspend fun searchAMArtist(
         name: String,

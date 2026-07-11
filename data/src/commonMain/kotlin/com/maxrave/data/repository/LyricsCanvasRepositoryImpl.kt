@@ -447,6 +447,114 @@ internal class LyricsCanvasRepositoryImpl(
                 }
         }.flowOn(Dispatchers.IO)
 
+    private fun cleanLyricsQuery(value: String): String =
+        value
+            .replace(
+                Regex("\\((feat\\.|ft.|cùng với|con|mukana|com|avec|合作音乐人: ) "),
+                " ",
+            ).replace(
+                Regex("( và | & | и | e | und |, |和| dan)"),
+                " ",
+            ).replace("  ", " ")
+            .replace(Regex("([()])"), "")
+            .replace(".", " ")
+
+    override fun getKuGouLyrics(
+        artist: String,
+        track: String,
+        duration: Int?,
+    ): Flow<Resource<Lyrics>> =
+        flow {
+            Logger.w("Lyrics", "getKuGouLyrics: $artist $track")
+            simpMusicLyrics
+                .searchKuGouLyrics(cleanLyricsQuery(track), cleanLyricsQuery(artist), duration)
+                .onSuccess { lyrics ->
+                    if (lyrics != null) {
+                        emit(Resource.Success(lyrics.toLyrics()))
+                    } else {
+                        emit(Resource.Error<Lyrics>("No KuGou lyrics found"))
+                    }
+                }.onFailure {
+                    it.printStackTrace()
+                    emit(Resource.Error<Lyrics>("KuGou search failed"))
+                }
+        }.flowOn(Dispatchers.IO)
+
+    override fun getPaxsenixLyrics(
+        artist: String,
+        track: String,
+        duration: Int?,
+    ): Flow<Resource<Lyrics>> =
+        flow {
+            Logger.w("Lyrics", "getPaxsenixLyrics: $artist $track")
+            simpMusicLyrics
+                .searchPaxsenixLyrics(cleanLyricsQuery(track), cleanLyricsQuery(artist), duration)
+                .onSuccess { lyrics ->
+                    if (lyrics != null) {
+                        emit(Resource.Success(lyrics.toLyrics()))
+                    } else {
+                        emit(Resource.Error<Lyrics>("No Paxsenix lyrics found"))
+                    }
+                }.onFailure {
+                    it.printStackTrace()
+                    emit(Resource.Error<Lyrics>("Paxsenix search failed"))
+                }
+        }.flowOn(Dispatchers.IO)
+
+    override fun getUnisonLyrics(
+        artist: String,
+        track: String,
+        duration: Int?,
+        videoId: String?,
+        album: String?,
+    ): Flow<Resource<Lyrics>> =
+        flow {
+            Logger.w("Lyrics", "getUnisonLyrics: $artist $track")
+            simpMusicLyrics
+                .searchUnisonLyrics(
+                    q_track = cleanLyricsQuery(track),
+                    q_artist = cleanLyricsQuery(artist),
+                    duration = duration,
+                    videoId = videoId,
+                    album = album,
+                ).onSuccess { lyrics ->
+                    if (lyrics != null) {
+                        emit(Resource.Success(lyrics.toLyrics()))
+                    } else {
+                        emit(Resource.Error<Lyrics>("No Unison lyrics found"))
+                    }
+                }.onFailure {
+                    it.printStackTrace()
+                    emit(Resource.Error<Lyrics>("Unison search failed"))
+                }
+        }.flowOn(Dispatchers.IO)
+
+    override fun getYouLyPlusLyrics(
+        artist: String,
+        track: String,
+        duration: Int?,
+        album: String?,
+    ): Flow<Resource<Lyrics>> =
+        flow {
+            Logger.w("Lyrics", "getYouLyPlusLyrics: $artist $track")
+            simpMusicLyrics
+                .searchYouLyPlusLyrics(
+                    q_track = cleanLyricsQuery(track),
+                    q_artist = cleanLyricsQuery(artist),
+                    duration = duration,
+                    album = album,
+                ).onSuccess { lyrics ->
+                    if (lyrics != null) {
+                        emit(Resource.Success(lyrics.toLyrics()))
+                    } else {
+                        emit(Resource.Error<Lyrics>("No YouLyPlus lyrics found"))
+                    }
+                }.onFailure {
+                    it.printStackTrace()
+                    emit(Resource.Error<Lyrics>("YouLyPlus search failed"))
+                }
+        }.flowOn(Dispatchers.IO)
+
     override fun getArtistLogo(artistName: String): Flow<Resource<ArtistLogo>> =
         flow {
             simpMusicLyrics

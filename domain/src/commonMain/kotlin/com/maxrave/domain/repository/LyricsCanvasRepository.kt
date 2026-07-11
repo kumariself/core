@@ -66,6 +66,33 @@ interface LyricsCanvasRepository {
         duration: Int?,
     ): Flow<Resource<Lyrics>>
 
+    fun getKuGouLyrics(
+        artist: String,
+        track: String,
+        duration: Int?,
+    ): Flow<Resource<Lyrics>>
+
+    fun getPaxsenixLyrics(
+        artist: String,
+        track: String,
+        duration: Int?,
+    ): Flow<Resource<Lyrics>>
+
+    fun getUnisonLyrics(
+        artist: String,
+        track: String,
+        duration: Int?,
+        videoId: String? = null,
+        album: String? = null,
+    ): Flow<Resource<Lyrics>>
+
+    fun getYouLyPlusLyrics(
+        artist: String,
+        track: String,
+        duration: Int?,
+        album: String? = null,
+    ): Flow<Resource<Lyrics>>
+
     /** Fetch the artist's name-logo image + dominant color from the hidden catalog. */
     fun getArtistLogo(artistName: String): Flow<Resource<ArtistLogo>>
 
